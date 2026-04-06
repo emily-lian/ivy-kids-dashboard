@@ -269,6 +269,7 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
   const[url,setUrl]=useState("");
   const[tabs,setTabs]=useState(null);
   const[selected,setSelected]=useState({});
+  const[customTitle,setCustomTitle]=useState("");
   const[fetching,setFetching]=useState(false);
   const[importing,setImporting]=useState(false);
   const[err,setErr]=useState("");
@@ -289,12 +290,15 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
     if(!chosen.length)return;
     setImporting(true);setErr("");
     try{
-      const entries=[];
+      const parts=[];
       for(const tab of chosen){
         const raw=await fetchTabData(sheetId,tab.title,apiKey);
-        entries.push({id:uid(),title:tab.title,raw,source:"sheets",sheetUrl:url});
+        parts.push(`--- Tab: ${tab.title} ---\n${raw}`);
       }
-      onImport(entries);
+      const merged=parts.join("\n\n");
+      const sheetName=url.match(/\/spreadsheets\/d\/[^/]+\/.*?#gid=/)
+        ?url:url; // fallback to url; title set by user
+      onImport([{id:uid(),title:customTitle.trim()||`Import (${chosen.length} tab${chosen.length!==1?"s":""})`,raw:merged,source:"sheets",sheetUrl:url}]);
     }catch(e){setErr(`Import failed: ${e.message}`);}
     finally{setImporting(false);}
   };
@@ -318,23 +322,33 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
         {err&&<div style={{marginTop:6,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"6px 10px"}}>{err}</div>}
       </div>
       {tabs&&(<>
+        <div style={{marginBottom:10}}>
+          <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Entry Label</label>
+          <input value={customTitle} onChange={e=>setCustomTitle(e.target.value)}
+            placeholder={`e.g. "QA Visit — Fall 2024"`}
+            style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none"}}/>
+          <p style={{fontSize:10,color:"#9ca3af",marginTop:3}}>All selected tabs will be merged into this single entry.</p>
+        </div>
         <div style={{marginBottom:12}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-            <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs ({tabs.length})</label>
+            <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs ({tabs.length}) — select all that belong to this visit</label>
             <button onClick={()=>{const s={};tabs.forEach(t=>{s[t.title]=true;});setSelected(s);}} style={{fontSize:10,color:"#7c3aed",background:"none",border:"none",cursor:"pointer",fontWeight:700}}>All</button>
             <button onClick={()=>setSelected({})} style={{fontSize:10,color:"#9ca3af",background:"none",border:"none",cursor:"pointer"}}>None</button>
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:200,overflowY:"auto"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:180,overflowY:"auto"}}>
             {tabs.map(tab=>(<label key={tab.title} style={{display:"flex",alignItems:"center",gap:9,padding:"8px 11px",background:selected[tab.title]?"#f5f3ff":"#fafafa",border:`1px solid ${selected[tab.title]?"#c4b5fd":"#e5e7eb"}`,borderRadius:8,cursor:"pointer"}}>
               <input type="checkbox" checked={!!selected[tab.title]} onChange={e=>setSelected(s=>({...s,[tab.title]:e.target.checked}))} style={{accentColor:"#7c3aed"}}/>
               <span style={{fontSize:12,fontWeight:selected[tab.title]?700:400,color:selected[tab.title]?"#4c1d95":"#374151"}}>📄 {tab.title}</span>
             </label>))}
           </div>
         </div>
+        {selCount>0&&<div style={{background:"#f0fdf4",border:"1px solid #a7f3d0",borderRadius:8,padding:"7px 11px",fontSize:11,color:"#065f46",marginBottom:12}}>
+          ✓ {selCount} tab{selCount!==1?"s":""} will be merged into 1 entry — counts as 1 visit.
+        </div>}
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
           <button onClick={doImport} disabled={importing||!selCount} style={{padding:"8px 18px",border:"none",borderRadius:8,background:selCount&&!importing?"#7c3aed":"#e5e7eb",color:selCount&&!importing?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:selCount&&!importing?"pointer":"not-allowed"}}>
-            {importing?`Importing ${selCount} tab${selCount!==1?"s":""}…`:`Import ${selCount} Tab${selCount!==1?"s":""}`}
+            {importing?"Importing…":"Import as 1 Entry"}
           </button>
         </div>
       </>)}
