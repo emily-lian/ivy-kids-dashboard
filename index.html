@@ -7,13 +7,15 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;}
-  body{font-family:system-ui,-apple-system,sans-serif;background:#f8f7ff;overflow:hidden;height:100vh;}
-  input,textarea,select,button{font-family:inherit;}
+  body{font-family:'DM Sans',system-ui,sans-serif;background:#FFFCF3;overflow:hidden;height:100vh;}
+  input,textarea,select,button{font-family:'DM Sans',system-ui,sans-serif;}
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
-  ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px;}
+  ::-webkit-scrollbar-thumb{background:#C9E2FF;border-radius:3px;}
+  ::selection{background:#C9E2FF;color:#0C2754;}
 </style>
 </head>
 <body>
@@ -574,21 +576,30 @@ function App(){
 
   const flagCount=name=>{const an=centers[name]?.analysis?.currentYear;if(!an)return 0;return(an.inconsistencies?.length||0)+(an.improvementThemes?.filter(t=>t.severity==="high").length||0);};
 
-  return(<div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#f8f7ff",overflow:"hidden"}}>
+  return(<div style={{display:"flex",flexDirection:"column",height:"100vh",background:OFF_WHITE,overflow:"hidden"}}>
     {/* Header */}
-    <div style={{background:"#fff",borderBottom:"1px solid #e5e7eb",padding:"9px 18px",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
-      <div style={{width:4,height:30,borderRadius:3,background:"linear-gradient(180deg,#7c3aed,#a78bfa)"}}/>
+    <div style={{background:IVY_NAVY,borderBottom:`2px solid ${IVY_DEEP}`,padding:"10px 20px",display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
+      {/* SVG logo crest */}
+      <svg width="38" height="38" viewBox="0 0 38 38">
+        <circle cx="19" cy="19" r="18" fill={IVY_NAVY} stroke="white" strokeWidth="1.5"/>
+        <circle cx="19" cy="19" r="14" fill={IVY_NAVY} stroke={SKY_BLUE} strokeWidth="1"/>
+        <circle cx="19" cy="19" r="10" fill={SKY_BLUE}/>
+        <text x="19" y="15" textAnchor="middle" fontSize="5" fontWeight="700" fill={IVY_NAVY} fontFamily="DM Sans,sans-serif" letterSpacing="0.5">IVY KIDS</text>
+        <text x="19" y="21" textAnchor="middle" fontSize="7" fill={IVY_NAVY}>📖</text>
+        <path d="M7 27 A13 13 0 0 0 31 27" fill="none" stroke={SKY_BLUE} strokeWidth="0.8"/>
+        <text x="19" y="28.5" textAnchor="middle" fontSize="3.2" fontWeight="600" fill="white" fontFamily="DM Sans,sans-serif" letterSpacing="1.2">EARLY LEARNING CENTER</text>
+      </svg>
       <div>
-        <div style={{fontSize:9,fontWeight:800,letterSpacing:"0.12em",color:"#7c3aed",textTransform:"uppercase"}}>Ivy Kids Systems</div>
-        <div style={{fontSize:16,fontWeight:800,color:"#1f2937",lineHeight:1.2}}>Quality Assurance Dashboard</div>
+        <div style={{fontSize:9,fontWeight:600,letterSpacing:"0.15em",color:SKY_BLUE,textTransform:"uppercase"}}>Ivy Kids Systems</div>
+        <div style={{fontSize:16,fontWeight:700,color:"white",lineHeight:1.2}}>Quality Assurance Dashboard</div>
       </div>
       <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
-        {[["centers","🏫 Centers"],["systems","🌐 Systems Overview"]].map(([t,lbl])=>(<button key={t} onClick={()=>setMainTab(t)} style={{padding:"6px 13px",borderRadius:7,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",background:mainTab===t?"#7c3aed":"#f3f4f6",color:mainTab===t?"#fff":"#6b7280"}}>{lbl}</button>))}
-        <button onClick={()=>setShowApiPanel(s=>!s)} style={{padding:"6px 11px",borderRadius:7,fontSize:11,fontWeight:700,border:`1.5px solid ${apiKey?"#10b981":"#f59e0b"}`,background:apiKey?"#f0fdf4":"#fffbeb",color:apiKey?"#065f46":"#92400e",cursor:"pointer"}}>
+        {[["centers","🏫 Centers"],["systems","🌐 Systems Overview"]].map(([t,lbl])=>(<button key={t} onClick={()=>setMainTab(t)} style={{padding:"6px 13px",borderRadius:7,fontSize:11,fontWeight:600,border:`1.5px solid ${mainTab===t?CITRON:SKY_BLUE+"80"}`,cursor:"pointer",background:mainTab===t?CITRON:IVY_BLUE,color:mainTab===t?IVY_DEEP:"white"}}>{lbl}</button>))}
+        <button onClick={()=>setShowApiPanel(s=>!s)} style={{padding:"6px 11px",borderRadius:7,fontSize:11,fontWeight:600,border:`1.5px solid ${apiKey?"#10b981":CITRON}`,background:apiKey?"#064e3b":"rgba(209,195,96,0.15)",color:apiKey?"#6ee7b7":CITRON,cursor:"pointer"}}>
           {apiKey?"📊 Sheets ✓":"📊 Connect Sheets"}
         </button>
       </div>
-      <div style={{fontSize:10,color:"#9ca3af",display:"flex",alignItems:"center",gap:5}}>
+      <div style={{fontSize:10,color:SKY_BLUE,display:"flex",alignItems:"center",gap:5}}>
         <span style={{width:6,height:6,borderRadius:"50%",background:"#10b981",display:"inline-block"}}/>Claude AI
       </div>
     </div>
@@ -635,7 +646,7 @@ function App(){
           {mainTab==="systems"&&(<div>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:16,gap:12}}>
               <div><h2 style={{fontSize:19,fontWeight:800,color:"#1f2937",margin:0}}>Systems-Level Overview</h2><p style={{fontSize:11,color:"#9ca3af",margin:"3px 0 0"}}>{analyzedCount} centers analyzed · Multi-year patterns</p></div>
-              <button onClick={runSystemsAnalysis} disabled={sysLoading||analyzedCount<2} style={{padding:"8px 16px",borderRadius:8,border:"none",fontSize:11,fontWeight:800,cursor:sysLoading||analyzedCount<2?"not-allowed":"pointer",background:sysLoading||analyzedCount<2?"#e5e7eb":"linear-gradient(135deg,#7c3aed,#a855f7)",color:sysLoading||analyzedCount<2?"#9ca3af":"#fff"}}>
+              <button onClick={runSystemsAnalysis} disabled={sysLoading||analyzedCount<2} style={{padding:"8px 16px",borderRadius:8,border:"none",fontSize:11,fontWeight:600,cursor:sysLoading||analyzedCount<2?"not-allowed":"pointer",background:sysLoading||analyzedCount<2?"#e5e7eb":`linear-gradient(135deg,${IVY_NAVY},${IVY_BLUE})`,color:sysLoading||analyzedCount<2?"#9ca3af":"#fff"}}>
                 {sysLoading?"🔄 Analyzing…":"🌐 Run Systems Analysis"}
               </button>
             </div>
@@ -702,18 +713,18 @@ function App(){
                   <button onClick={()=>setShowAddYear(false)} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #e5e7eb",background:"#fff",fontSize:11,cursor:"pointer",color:"#9ca3af"}}>Cancel</button>
                 </div>
               ):(<button onClick={()=>setShowAddYear(true)} style={{width:"100%",border:"2px dashed #c4b5fd",borderRadius:9,padding:10,fontSize:12,color:"#7c3aed",background:"#faf5ff",cursor:"pointer",marginBottom:8,fontWeight:600}}>+ Add School Year</button>))}
-              <button onClick={runCenterAnalysis} disabled={loading||totalEntries===0} style={{width:"100%",padding:12,borderRadius:10,fontSize:12,fontWeight:800,border:"none",cursor:loading||totalEntries===0?"not-allowed":"pointer",background:loading||totalEntries===0?"#e5e7eb":"linear-gradient(135deg,#7c3aed,#a855f7)",color:loading||totalEntries===0?"#9ca3af":"#fff",boxShadow:loading||totalEntries===0?"none":"0 4px 14px rgba(124,58,237,0.28)"}}>
+              <button onClick={runCenterAnalysis} disabled={loading||totalEntries===0} style={{width:"100%",padding:12,borderRadius:10,fontSize:12,fontWeight:700,border:"none",cursor:loading||totalEntries===0?"not-allowed":"pointer",background:loading||totalEntries===0?"#e5e7eb":`linear-gradient(135deg,${IVY_NAVY},${IVY_BLUE})`,color:loading||totalEntries===0?"#9ca3af":"#fff",boxShadow:loading||totalEntries===0?"none":`0 4px 14px ${IVY_NAVY}50`}}>
                 {loading?`🔄 Analyzing ${centerYears.length} year${centerYears.length!==1?"s":""} of data…`:`🧠 Analyze All Years (${totalEntries} total entries)`}
               </button>
               {totalEntries===0&&<p style={{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:5}}>Add at least one entry to run analysis.</p>}
             </div>)}
 
             {centerTab==="analysis"&&a&&cy&&(<div>
-              <div style={{background:"#fff",borderRadius:14,border:"2px solid #ede9fe",padding:16,display:"flex",gap:14,alignItems:"center",marginBottom:10}}>
+              <div style={{background:"#fff",borderRadius:14,border:`2px solid ${SKY_BLUE}`,padding:16,display:"flex",gap:14,alignItems:"center",marginBottom:10}}>
                 <ScoreRing score={cy.score}/>
                 <div style={{flex:1}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
-                    <span style={{fontSize:11,fontWeight:800,color:"#4c1d95",background:"#ede9fe",padding:"2px 9px",borderRadius:6}}>{cy.year} ★ Current Year</span>
+                    <span style={{fontSize:11,fontWeight:700,color:"white",background:IVY_NAVY,padding:"2px 10px",borderRadius:6}}>{cy.year} ★ Current Year</span>
                     {mt?.overallTrend&&<span style={{fontSize:10,color:"#6b7280"}}>Multi-year: <TrendBadge trend={mt.overallTrend}/></span>}
                   </div>
                   <p style={{fontSize:12,color:"#374151",lineHeight:1.65,margin:0}}>{cy.summary}</p>
@@ -729,8 +740,8 @@ function App(){
                 </div>)}
               </div>)}
               {cy.strengthThemes?.length>0&&<SectionCard title="✅ This Year's Strengths" subtitle={`${cy.strengthThemes.length} themes · ${cy.year}`} accentColor="#10b981">{cy.strengthThemes.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
-              {cy.improvementThemes?.length>0&&<SectionCard title="⚠️ This Year's Areas for Improvement" subtitle={`${cy.year}`} accentColor="#f59e0b">{cy.improvementThemes.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
-              {cy.classroomSpotlights?.length>0&&<SectionCard title="🏫 Classroom Spotlights" subtitle={cy.year} accentColor="#8b5cf6">
+              {cy.improvementThemes?.length>0&&<SectionCard title="⚠️ This Year's Areas for Improvement" subtitle={`${cy.year}`} accentColor={CITRON}>{cy.improvementThemes.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
+              {cy.classroomSpotlights?.length>0&&<SectionCard title="🏫 Classroom Spotlights" subtitle={cy.year} accentColor={SKY_BLUE}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   {cy.classroomSpotlights.map((c,i)=>{const ok=c.status==="performing_well";return(<div key={i} style={{borderRadius:9,padding:9,background:ok?"#f0fdf4":"#fffbeb",border:`1px solid ${ok?"#a7f3d0":"#fcd34d"}`}}>
                     <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:4,flexWrap:"wrap"}}>
@@ -743,13 +754,13 @@ function App(){
                 </div>
               </SectionCard>}
               {cy.inconsistencies?.length>0&&<SectionCard title="🚨 Cross-Report Inconsistencies" subtitle={`${cy.inconsistencies.length} found · ${cy.year}`} accentColor="#ef4444">{cy.inconsistencies.map((item,i)=><InconsistencyBlock key={i} item={item}/>)}</SectionCard>}
-              {cy.accreditationRisks?.length>0&&<SectionCard title="🎓 Cognia Accreditation Risks" subtitle={cy.year} accentColor="#ef4444">
-                {cy.accreditationRisks.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:8,marginBottom:5}}>
-                  <span style={{fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:99,background:SEVERITY_COLOR[r.severity]+"22",color:SEVERITY_COLOR[r.severity],flexShrink:0,marginTop:1}}>{r.severity}</span>
-                  <div><div style={{fontSize:11,fontWeight:700,color:"#991b1b"}}>{r.risk}</div>{r.standard&&<div style={{fontSize:10,color:"#b91c1c",marginTop:1}}>Cognia: {r.standard}</div>}</div>
+              {cy.accreditationRisks?.length>0&&<SectionCard title="🎓 Cognia Accreditation Risks" subtitle={cy.year} accentColor={IVY_NAVY}>
+                {cy.accreditationRisks.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:SKY_BLUE+"22",border:`1px solid ${SKY_BLUE}`,borderRadius:8,marginBottom:5}}>
+                  <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:99,background:SEVERITY_COLOR[r.severity]+"22",color:SEVERITY_COLOR[r.severity],flexShrink:0,marginTop:1}}>{r.severity}</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:IVY_NAVY}}>{r.risk}</div>{r.standard&&<div style={{fontSize:10,color:IVY_BLUE,marginTop:1}}>Cognia: {r.standard}</div>}</div>
                 </div>))}
               </SectionCard>}
-              {cy.recommendedActions?.length>0&&<SectionCard title="📋 Recommended Actions" subtitle={`For ${cy.year}`} accentColor="#6366f1">
+              {cy.recommendedActions?.length>0&&<SectionCard title="📋 Recommended Actions" subtitle={`For ${cy.year}`} accentColor={OLIVE}>
                 {cy.recommendedActions.map((act,i)=>{const pc=PRIORITY_COLOR[act.priority]||"#6b7280";return(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
                   <span style={{fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:99,background:pc+"22",color:pc,border:`1px solid ${pc}40`,flexShrink:0,marginTop:1}}>{(act.priority||"").replace("_"," ")}</span>
                   <div style={{flex:1,fontSize:11,color:"#374151"}}>{act.action}</div>
