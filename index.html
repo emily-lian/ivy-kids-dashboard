@@ -33,6 +33,16 @@ const REPORT_TYPES=[
   {key:"teacher",label:"Teacher Survey",icon:"✏️",min:1},
 ];
 const INITIAL_CENTERS=["Ivy Kids of Honolulu","Ivy Kids of Windsor","Ivy Kids of Paris"];
+
+// ── Ivy Kids Brand Colors ──────────────────────────────────────────────────
+const IVY_NAVY  = "#0C2754";
+const IVY_DEEP  = "#041A40";
+const IVY_BLUE  = "#184695";
+const SKY_BLUE  = "#C9E2FF";
+const CITRON    = "#D1C360";
+const OLIVE     = "#807522";
+const OFF_WHITE = "#FFFCF3";
+const PEARL     = "#E8E0CC";
 const curYear=new Date().getFullYear();
 const SCHOOL_YEARS=Array.from({length:8},(_,i)=>{const y=curYear-i;return`${y}–${String(y+1).slice(2)}`;});
 const PRIORITY_COLOR={immediate:"#ef4444",short_term:"#f59e0b",long_term:"#3b82f6"};
