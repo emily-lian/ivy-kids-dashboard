@@ -59,6 +59,8 @@ function parsePaste(raw){
 function extractSheetId(url){const m=url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
 function extractDocId(url){const m=url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
 
+const PROXY = "https://ivy-kids-proxy.emily-79b.workers.dev";
+
 // ── localStorage persistence ───────────────────────────────────────────────
 function loadState(){
   try{
@@ -116,7 +118,7 @@ async function fetchDocContent(docId,apiKey){
 
 // ── Claude API ─────────────────────────────────────────────────────────────
 async function callClaude(prompt){
-  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
+  const res=await fetch(`${PROXY}/anthropic`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
   if(!res.ok)throw new Error(`API ${res.status}`);
   const data=await res.json();
   const text=data.content?.find(b=>b.type==="text")?.text||"";
