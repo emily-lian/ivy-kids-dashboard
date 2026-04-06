@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Ivy Kids Systems — QA Dashboard</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#f8f7ff;overflow:hidden;height:100vh;}
+  input,textarea,select,button{font-family:inherit;}
+  ::-webkit-scrollbar{width:6px;height:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useCallback,useMemo,useEffect}=React;
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const REPORT_TYPES=[
+  {key:"qa",label:"QA Visit",icon:"🔍",min:2},
+  {key:"cd",label:"CD Observation",icon:"👤",min:4},
+  {key:"ed",label:"ED Observation",icon:"🎓",min:5},
+  {key:"curriculum",label:"Curriculum Visit",icon:"📚",min:2},
+  {key:"family",label:"Family Survey",icon:"👨‍👩‍👧",min:2},
+  {key:"teacher",label:"Teacher Survey",icon:"✏️",min:1},
+];
+const INITIAL_CENTERS=["Ivy Kids of Honolulu","Ivy Kids of Windsor","Ivy Kids of Paris"];
+const curYear=new Date().getFullYear();
+const SCHOOL_YEARS=Array.from({length:8},(_,i)=>{const y=curYear-i;return`${y}–${String(y+1).slice(2)}`;});
+const PRIORITY_COLOR={immediate:"#ef4444",short_term:"#f59e0b",long_term:"#3b82f6"};
+const SEVERITY_COLOR={high:"#ef4444",medium:"#f59e0b",low:"#3b82f6"};
+const TREND_META={improving:{icon:"↗",color:"#10b981"},stable:{icon:"→",color:"#6b7280"},declining:{icon:"↘",color:"#ef4444"},mixed:{icon:"↕",color:"#f59e0b"},insufficient_data:{icon:"?",color:"#9ca3af"}};
+const STATUS_MAP={high_performing:{bg:"#d1fae5",color:"#065f46",label:"High performing"},on_track:{bg:"#dbeafe",color:"#1e40af",label:"On track"},needs_support:{bg:"#fef3c7",color:"#92400e",label:"Needs support"},urgent:{bg:"#fee2e2",color:"#991b1b",label:"Urgent"}};
+
+function uid(){return Math.random().toString(36).slice(2,9);}
+function parsePaste(raw){
+  const lines=raw.trim().split("\n");
+  if(lines.length<2||!lines[0].includes("\t"))return raw;
+  return lines.map(l=>l.split("\t").join(" | ")).join("\n");
+}
+function extractSheetId(url){const m=url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
+function extractDocId(url){const m=url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
+
+// ── localStorage persistence ───────────────────────────────────────────────
+function loadState(){
+  try{
+    const raw=localStorage.getItem("ivykids_centers");
+    const apiKey=localStorage.getItem("ivykids_apikey")||"";
+    const sysAnalysis=JSON.parse(localStorage.getItem("ivykids_sysanalysis")||"null");
+    if(raw){return{centers:JSON.parse(raw),apiKey,sysAnalysis};}
+  }catch(e){}
+  return{
+    centers:INITIAL_CENTERS.reduce((acc,n)=>({...acc,[n]:{years:{},analysis:null}}),{}),
+    apiKey:"",
+    sysAnalysis:null,
+  };
+}
+function saveCenters(centers){try{localStorage.setItem("ivykids_centers",JSON.stringify(centers));}catch(e){}}
+function saveApiKey(k){try{if(k)localStorage.setItem("ivykids_apikey",k);else localStorage.removeItem("ivykids_apikey");}catch(e){}}
+function saveSysAnalysis(a){try{localStorage.setItem("ivykids_sysanalysis",JSON.stringify(a));}catch(e){}}
+
+// ── Google APIs ────────────────────────────────────────────────────────────
+async function fetchSheetTabs(sheetId,apiKey){
+  const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?key=${apiKey}`);
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+  const d=await r.json();
+  return d.sheets.map(s=>({id:s.properties.sheetId,title:s.properties.title}));
+}
+async function fetchTabData(sheetId,tabTitle,apiKey){
+  const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tabTitle)}?key=${apiKey}`);
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+  const d=await r.json();
+  if(!d.values?.length)return"(empty tab)";
+  return d.values.map(row=>row.join(" | ")).join("\n");
+}
+function docBodyToText(content){
+  if(!content?.length)return"(empty document)";
+  const lines=[];
+  for(const block of content){
+    if(block.paragraph){
+      const text=block.paragraph.elements?.map(el=>el.textRun?.content||"").join("").trimEnd();
+      if(text)lines.push(text);
+    }else if(block.table){
+      for(const row of block.table.tableRows||[]){
+        const cells=(row.tableCells||[]).map(cell=>(cell.content||[]).flatMap(b=>(b.paragraph?.elements||[]).map(el=>el.textRun?.content||"")).join("").trim());
+        if(cells.some(c=>c))lines.push(cells.join(" | "));
+      }
+    }
+  }
+  return lines.join("\n")||"(no readable content found)";
+}
+async function fetchDocContent(docId,apiKey){
+  const r=await fetch(`https://docs.googleapis.com/v1/documents/${docId}?key=${apiKey}`);
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+  const d=await r.json();
+  return{title:d.title||"Untitled",text:docBodyToText(d.body?.content)};
+}
+
+// ── Claude API ─────────────────────────────────────────────────────────────
+async function callClaude(prompt){
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
+  if(!res.ok)throw new Error(`API ${res.status}`);
+  const data=await res.json();
+  const text=data.content?.find(b=>b.type==="text")?.text||"";
+  return JSON.parse(text.replace(/```json|```/g,"").trim());
+}
+async function analyzeCenterMultiYear(center,sortedYears,latestYear){
+  const sections=[];
+  sortedYears.forEach(({year,data})=>{
+    REPORT_TYPES.forEach(rt=>{
+      (data.reports[rt.key]||[]).forEach(e=>{
+        if(e.raw?.trim())sections.push(`=== [${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label}${e.title?" — "+e.title:""} ===\n${e.raw}`);
+      });
+    });
+  });
+  if(!sections.length)return null;
+  const prompt=`You are an early childhood education QA expert analyzing center data for Cognia accreditation.
+Center: ${center}
+Years of data (oldest→newest): ${sortedYears.map(y=>y.year).join(", ")}
+Current/most recent year: ${latestYear}
+
+All reports in chronological order:
+${sections.join("\n\n")}
+
+CRITICAL: "currentYear" fields = ONLY most recent year (${latestYear}). "multiYearTrends" = patterns across ALL years.
+
+Respond ONLY with valid JSON (no markdown fences):
+{"currentYear":{"year":"${latestYear}","score":<1-100>,"summary":"2-3 sentences on this year only","strengthThemes":[{"theme":"...","detail":"...","sources":["qa","cd",...],"classrooms":[]}],"improvementThemes":[{"theme":"...","detail":"...","severity":"low|medium|high","sources":[],"classrooms":[],"isNew":true}],"classroomSpotlights":[{"classroom":"...","status":"needs_attention|performing_well","highlights":["..."],"sources":[]}],"inconsistencies":[{"issue":"...","detail":"...","flaggedIn":[],"notFlaggedIn":[],"riskLevel":"low|medium|high"}],"accreditationRisks":[{"risk":"...","standard":"...","severity":"low|medium|high"}],"recommendedActions":[{"action":"...","priority":"immediate|short_term|long_term","owner":"CD|ED|Director|Staff|All","linkedTheme":"..."}]},"multiYearTrends":{"overallTrend":"improving|stable|declining|mixed","yearlyScores":[{"year":"...","score":<1-100>,"headline":"≤8 word note"}],"persistentStrengths":[{"theme":"...","detail":"...","yearsPresent":[]}],"persistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","yearsPresent":[],"currentTrend":"improving|stable|declining|mixed"}],"resolvedConcerns":[{"theme":"...","detail":"...","resolvedIn":"..."}],"emergingStrengths":[{"theme":"...","detail":"...","emergedIn":"..."}],"classroomPatterns":[{"classroom":"...","pattern":"...","trend":"improving|stable|declining|mixed","yearsTracked":[]}],"inconsistencyPattern":"1-2 sentences","accreditationTrajectory":"2-3 sentences"},"systemsLevelTags":["max 8 short tags"]}`;
+  return callClaude(prompt);
+}
+async function analyzeSystemsMultiYear(centersData){
+  const summaries=Object.entries(centersData).filter(([,v])=>v.analysis).map(([name,v])=>{
+    const a=v.analysis;
+    return`CENTER: ${name}\nCurrent score: ${a.currentYear?.score||"?"} | Trend: ${a.multiYearTrends?.overallTrend||"?"}\nScores: ${a.multiYearTrends?.yearlyScores?.map(y=>`${y.year}:${y.score}`).join(", ")||""}\nStrengths: ${a.currentYear?.strengthThemes?.map(t=>t.theme).join("; ")||"none"}\nConcerns: ${a.currentYear?.improvementThemes?.map(t=>`${t.theme}(${t.severity}${t.isNew?",NEW":""})`).join("; ")||"none"}\nPersistent concerns: ${a.multiYearTrends?.persistentConcerns?.map(t=>`${t.theme}(${t.currentTrend})`).join("; ")||"none"}\nTags: ${a.systemsLevelTags?.join(", ")||""}`;
+  });
+  if(summaries.length<2)return null;
+  const prompt=`You are an early childhood education systems director analyzing quality data across ${summaries.length} centers for Cognia accreditation.
+${summaries.join("\n\n---\n\n")}
+Respond ONLY with valid JSON (no markdown fences):
+{"overview":"4-5 sentences","systemScore":<1-100>,"systemTrend":"improving|stable|declining|mixed","centerRankings":[{"center":"...","currentScore":<1-100>,"trend":"improving|stable|declining|mixed","status":"high_performing|on_track|needs_support|urgent"}],"systemicPersistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[],"trend":"improving|stable|declining|mixed"}],"systemicCurrentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"systemWideStrengths":[{"theme":"...","detail":"...","centersAffected":[]}],"isolatedConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"inconsistencyPattern":"paragraph","accreditationOutlook":"paragraph","priorityActions":[{"action":"...","scope":"all_centers|specific_centers","centers":[],"priority":"immediate|short_term|long_term"}]}`;
+  return callClaude(prompt);
+}
+
+// ── Design primitives ──────────────────────────────────────────────────────
+function ScoreRing({score,size=76}){
+  const r=28,cx=size/2,cy=size/2,circ=2*Math.PI*r;
+  const col=score>=75?"#10b981":score>=50?"#f59e0b":"#ef4444";
+  return(<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{flexShrink:0}}>
+    <circle cx={cx} cy={cy} r={r} fill="none" stroke="#e5e7eb" strokeWidth="5.5"/>
+    <circle cx={cx} cy={cy} r={r} fill="none" stroke={col} strokeWidth="5.5" strokeDasharray={`${(score/100)*circ} ${circ}`} strokeLinecap="round" transform={`rotate(-90 ${cx} ${cy})`}/>
+    <text x={cx} y={cy+5} textAnchor="middle" fontSize="14" fontWeight="800" fill={col}>{score}</text>
+  </svg>);
+}
+function Pill({text,color="#6b7280",bg="#f3f4f6"}){
+  return<span style={{display:"inline-flex",alignItems:"center",padding:"2px 7px",borderRadius:99,fontSize:10,fontWeight:700,background:bg,color,border:`1px solid ${color}28`,marginRight:3,marginBottom:3}}>{text}</span>;
+}
+function TrendBadge({trend}){
+  if(!trend)return null;
+  const m=TREND_META[trend]||TREND_META.stable;
+  return<span style={{fontSize:10,fontWeight:700,color:m.color}}>{m.icon} {trend.replace("_"," ")}</span>;
+}
+function SectionCard({title,subtitle,accentColor="#7c3aed",collapsible=false,defaultOpen=true,children}){
+  const[open,setOpen]=useState(defaultOpen);
+  return(<div style={{background:"#fff",borderRadius:14,border:"1px solid #f0f0f0",overflow:"hidden",marginBottom:10}}>
+    <div style={{borderLeft:`4px solid ${accentColor}`,padding:"10px 14px",borderBottom:open?"1px solid #f5f5f5":"none",display:"flex",alignItems:"center",gap:10,cursor:collapsible?"pointer":"default"}} onClick={collapsible?()=>setOpen(o=>!o):undefined}>
+      <span style={{fontSize:13,fontWeight:800,color:"#1f2937",flex:1}}>{title}</span>
+      {subtitle&&<span style={{fontSize:11,color:"#9ca3af"}}>{subtitle}</span>}
+      {collapsible&&<span style={{fontSize:11,color:"#d1d5db"}}>{open?"▲":"▼"}</span>}
+    </div>
+    {open&&<div style={{padding:13}}>{children}</div>}
+  </div>);
+}
+function ScoreBar({score,label,isLatest}){
+  const col=score>=75?"#10b981":score>=50?"#f59e0b":"#ef4444";
+  return(<div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+    <span style={{fontSize:10,fontWeight:800,color:isLatest?col:"#9ca3af"}}>{score}</span>
+    <div style={{width:"100%",background:isLatest?col:col+"50",borderRadius:"3px 3px 0 0",height:Math.max(6,(score/100)*44)}}/>
+    <span style={{fontSize:8,color:isLatest?"#4b5563":"#9ca3af",textAlign:"center",lineHeight:1.2,fontWeight:isLatest?700:400}}>{label}</span>
+  </div>);
+}
+function ThemeBlock({item,type}){
+  const isS=type==="strength";
+  const sev=item.severity||"medium";
+  const bc=isS?"#10b981":SEVERITY_COLOR[sev];
+  const bg=isS?"#f0fdf4":sev==="high"?"#fff5f5":sev==="medium"?"#fffbeb":"#eff6ff";
+  return(<div style={{borderLeft:`3px solid ${bc}`,padding:"7px 7px 7px 11px",background:bg,borderRadius:"0 8px 8px 0",marginBottom:7}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+      <span style={{fontSize:12,fontWeight:700,color:"#1f2937"}}>{item.theme||item.risk}</span>
+      {!isS&&sev&&<span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:bc+"22",color:bc}}>{sev}</span>}
+      {item.isNew&&<span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:99,background:"#ede9fe",color:"#7c3aed"}}>new this year</span>}
+      {item.currentTrend&&<TrendBadge trend={item.currentTrend}/>}
+      {item.standard&&<span style={{fontSize:9,color:"#9ca3af"}}>Cognia: {item.standard}</span>}
+    </div>
+    <p style={{fontSize:11,color:"#4b5563",margin:"0 0 5px",lineHeight:1.5}}>{item.detail}</p>
+    {item.yearsPresent?.length>0&&<div style={{fontSize:9,color:"#7c3aed",marginBottom:4}}>📅 {item.yearsPresent.join(", ")}</div>}
+    <div style={{display:"flex",flexWrap:"wrap",gap:2}}>
+      {item.classrooms?.filter(c=>c).map((c,j)=><Pill key={j} text={"🏫 "+c} color="#7c3aed" bg="#ede9fe"/>)}
+      {item.sources?.map(s=><Pill key={s} text={s.toUpperCase()} color="#374151" bg="#f3f4f6"/>)}
+      {item.centersAffected?.map((n,j)=><Pill key={j} text={n} color="#6b7280" bg="#f3f4f6"/>)}
+    </div>
+  </div>);
+}
+function InconsistencyBlock({item}){
+  const rc=SEVERITY_COLOR[item.riskLevel||item.severity]||"#f59e0b";
+  return(<div style={{borderLeft:`3px solid ${rc}`,padding:"7px 7px 7px 11px",background:rc+"0d",borderRadius:"0 8px 8px 0",marginBottom:6}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+      <span style={{fontSize:12,fontWeight:700,color:"#1f2937"}}>{item.issue||item.theme}</span>
+      <span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:rc+"22",color:rc}}>{item.riskLevel||item.severity} risk</span>
+      {item.persistent&&<span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:99,background:"#fee2e2",color:"#991b1b"}}>persistent</span>}
+      {item.trend&&<TrendBadge trend={item.trend}/>}
+    </div>
+    <p style={{fontSize:11,color:"#4b5563",margin:"0 0 5px"}}>{item.detail}</p>
+    <div style={{display:"flex",flexWrap:"wrap",gap:2}}>
+      {item.flaggedIn?.map(s=><Pill key={s} text={"🚩 "+s.toUpperCase()} color="#991b1b" bg="#fee2e2"/>)}
+      {item.notFlaggedIn?.map(s=><Pill key={s} text={"✓ "+s.toUpperCase()} color="#065f46" bg="#d1fae5"/>)}
+      {item.centersAffected?.map((n,j)=><Pill key={j} text={n} color="#6b7280" bg="#f3f4f6"/>)}
+    </div>
+  </div>);
+}
+
+// ── API Key Panel ──────────────────────────────────────────────────────────
+function ApiKeyPanel({apiKey,onSave}){
+  const[val,setVal]=useState(apiKey||"");
+  const[show,setShow]=useState(false);
+  const[step,setStep]=useState(false);
+  return(<div style={{background:"#fff",border:"1.5px solid #c4b5fd",borderRadius:14,padding:18,marginBottom:16}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+      <span style={{fontSize:20}}>🔑</span>
+      <div>
+        <div style={{fontSize:13,fontWeight:800,color:"#1f2937"}}>Google Sheets & Docs API Key</div>
+        <div style={{fontSize:11,color:apiKey?"#10b981":"#f59e0b",fontWeight:600}}>{apiKey?"✓ Connected — paste Sheet or Doc URLs to import":"Not set — required to import from Google"}</div>
+      </div>
+      <button onClick={()=>setStep(s=>!s)} style={{marginLeft:"auto",fontSize:11,color:"#7c3aed",background:"#ede9fe",border:"none",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontWeight:700}}>{step?"Hide setup":"How to get a key"}</button>
+    </div>
+    {step&&(<div style={{background:"#faf5ff",borderRadius:10,padding:14,marginBottom:12,fontSize:11,color:"#374151",lineHeight:1.7}}>
+      <div style={{fontWeight:800,color:"#4c1d95",marginBottom:6}}>One-time setup — about 3 minutes:</div>
+      <ol style={{paddingLeft:18,display:"flex",flexDirection:"column",gap:4}}>
+        <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noreferrer" style={{color:"#7c3aed"}}>console.cloud.google.com</a> and sign in.</li>
+        <li>Click <b>Select a project</b> → <b>New Project</b> → name it "Ivy Kids Dashboard" → <b>Create</b>.</li>
+        <li>Search <b>Google Sheets API</b> → Enable. Then search <b>Google Docs API</b> → Enable.</li>
+        <li>Go to <b>APIs &amp; Services → Credentials</b> → <b>+ Create Credentials → API key</b>. Copy the key.</li>
+        <li>Click <b>Edit API key</b> → restrict to <b>Google Sheets API</b> and <b>Google Docs API</b> → Save.</li>
+        <li>Paste your key below.</li>
+      </ol>
+      <div style={{marginTop:8,padding:"8px 10px",background:"#ede9fe",borderRadius:8,color:"#4c1d95",fontSize:10}}>
+        <b>Important:</b> Each Sheet or Doc must be shared as <b>"Anyone with the link can view"</b>.
+      </div>
+    </div>)}
+    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+      <div style={{position:"relative",flex:1}}>
+        <input type={show?"text":"password"} value={val} onChange={e=>setVal(e.target.value)} placeholder="Paste your Google API key here…"
+          style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 36px 8px 11px",fontSize:12,outline:"none",fontFamily:"monospace"}}/>
+        <button onClick={()=>setShow(s=>!s)} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",border:"none",background:"none",cursor:"pointer",fontSize:12,color:"#9ca3af"}}>{show?"🙈":"👁"}</button>
+      </div>
+      <button onClick={()=>val.trim()&&onSave(val.trim())} disabled={!val.trim()} style={{padding:"8px 16px",borderRadius:8,border:"none",background:val.trim()?"#7c3aed":"#e5e7eb",color:val.trim()?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:val.trim()?"pointer":"not-allowed",whiteSpace:"nowrap"}}>Save Key</button>
+      {apiKey&&<button onClick={()=>{setVal("");onSave("");}} style={{padding:"8px 12px",borderRadius:8,border:"1px solid #fca5a5",background:"none",color:"#ef4444",fontSize:11,cursor:"pointer"}}>Clear</button>}
+    </div>
+  </div>);
+}
+
+// ── Sheet Import Modal ─────────────────────────────────────────────────────
+function SheetImportModal({apiKey,type,onImport,onClose}){
+  const[url,setUrl]=useState("");
+  const[tabs,setTabs]=useState(null);
+  const[selected,setSelected]=useState({});
+  const[fetching,setFetching]=useState(false);
+  const[importing,setImporting]=useState(false);
+  const[err,setErr]=useState("");
+  const sheetId=useMemo(()=>extractSheetId(url),[url]);
+  const loadTabs=async()=>{
+    if(!sheetId){setErr("Could not find a Sheet ID in that URL.");return;}
+    setFetching(true);setErr("");setTabs(null);setSelected({});
+    try{
+      const t=await fetchSheetTabs(sheetId,apiKey);
+      setTabs(t);
+      const sel={};t.forEach(tab=>{sel[tab.title]=true;});
+      setSelected(sel);
+    }catch(e){setErr(`Could not load sheet: ${e.message}`);}
+    finally{setFetching(false);}
+  };
+  const doImport=async()=>{
+    const chosen=tabs.filter(t=>selected[t.title]);
+    if(!chosen.length)return;
+    setImporting(true);setErr("");
+    try{
+      const entries=[];
+      for(const tab of chosen){
+        const raw=await fetchTabData(sheetId,tab.title,apiKey);
+        entries.push({id:uid(),title:tab.title,raw,source:"sheets",sheetUrl:url});
+      }
+      onImport(entries);
+    }catch(e){setErr(`Import failed: ${e.message}`);}
+    finally{setImporting(false);}
+  };
+  const selCount=Object.values(selected).filter(Boolean).length;
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:"#fff",borderRadius:16,padding:22,width:560,maxWidth:"95vw",maxHeight:"88vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+        <span style={{fontSize:22}}>📊</span>
+        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import from Google Sheets</div><div style={{fontSize:11,color:"#9ca3af"}}>{type.label}</div></div>
+        <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
+      </div>
+      <div style={{marginBottom:12}}>
+        <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Google Sheet URL</label>
+        <div style={{display:"flex",gap:8}}>
+          <input value={url} onChange={e=>{setUrl(e.target.value);setTabs(null);setErr("");}} placeholder="https://docs.google.com/spreadsheets/d/…"
+            style={{flex:1,border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 11px",fontSize:12,outline:"none"}}/>
+          <button onClick={loadTabs} disabled={!sheetId||fetching} style={{padding:"8px 14px",borderRadius:8,border:"none",background:sheetId&&!fetching?"#7c3aed":"#e5e7eb",color:sheetId&&!fetching?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:sheetId&&!fetching?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
+            {fetching?"Loading…":"Load Tabs"}
+          </button>
+        </div>
+        {err&&<div style={{marginTop:6,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"6px 10px"}}>{err}</div>}
+      </div>
+      {tabs&&(<>
+        <div style={{marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+            <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs ({tabs.length})</label>
+            <button onClick={()=>{const s={};tabs.forEach(t=>{s[t.title]=true;});setSelected(s);}} style={{fontSize:10,color:"#7c3aed",background:"none",border:"none",cursor:"pointer",fontWeight:700}}>All</button>
+            <button onClick={()=>setSelected({})} style={{fontSize:10,color:"#9ca3af",background:"none",border:"none",cursor:"pointer"}}>None</button>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:200,overflowY:"auto"}}>
+            {tabs.map(tab=>(<label key={tab.title} style={{display:"flex",alignItems:"center",gap:9,padding:"8px 11px",background:selected[tab.title]?"#f5f3ff":"#fafafa",border:`1px solid ${selected[tab.title]?"#c4b5fd":"#e5e7eb"}`,borderRadius:8,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!selected[tab.title]} onChange={e=>setSelected(s=>({...s,[tab.title]:e.target.checked}))} style={{accentColor:"#7c3aed"}}/>
+              <span style={{fontSize:12,fontWeight:selected[tab.title]?700:400,color:selected[tab.title]?"#4c1d95":"#374151"}}>📄 {tab.title}</span>
+            </label>))}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
+          <button onClick={doImport} disabled={importing||!selCount} style={{padding:"8px 18px",border:"none",borderRadius:8,background:selCount&&!importing?"#7c3aed":"#e5e7eb",color:selCount&&!importing?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:selCount&&!importing?"pointer":"not-allowed"}}>
+            {importing?`Importing ${selCount} tab${selCount!==1?"s":""}…`:`Import ${selCount} Tab${selCount!==1?"s":""}`}
+          </button>
+        </div>
+      </>)}
+      {!tabs&&!err&&<div style={{textAlign:"center",padding:"20px 0",color:"#9ca3af",fontSize:11}}>Paste a Sheet URL above and click "Load Tabs".</div>}
+    </div>
+  </div>);
+}
+
+// ── Doc Import Modal ───────────────────────────────────────────────────────
+function DocImportModal({apiKey,type,onImport,onClose}){
+  const[url,setUrl]=useState("");
+  const[preview,setPreview]=useState(null);
+  const[fetching,setFetching]=useState(false);
+  const[err,setErr]=useState("");
+  const docId=useMemo(()=>extractDocId(url),[url]);
+  const loadDoc=async()=>{
+    if(!docId){setErr("Could not find a Doc ID in that URL.");return;}
+    setFetching(true);setErr("");setPreview(null);
+    try{const r=await fetchDocContent(docId,apiKey);setPreview(r);}
+    catch(e){setErr(`Could not load document: ${e.message}`);}
+    finally{setFetching(false);}
+  };
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:"#fff",borderRadius:16,padding:22,width:580,maxWidth:"95vw",maxHeight:"88vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+        <span style={{fontSize:22}}>📄</span>
+        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import from Google Docs</div><div style={{fontSize:11,color:"#9ca3af"}}>{type.label}</div></div>
+        <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
+      </div>
+      <div style={{marginBottom:12}}>
+        <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Google Doc URL</label>
+        <div style={{display:"flex",gap:8}}>
+          <input value={url} onChange={e=>{setUrl(e.target.value);setPreview(null);setErr("");}} placeholder="https://docs.google.com/document/d/…"
+            style={{flex:1,border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 11px",fontSize:12,outline:"none"}}/>
+          <button onClick={loadDoc} disabled={!docId||fetching} style={{padding:"8px 14px",borderRadius:8,border:"none",background:docId&&!fetching?"#7c3aed":"#e5e7eb",color:docId&&!fetching?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:docId&&!fetching?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
+            {fetching?"Loading…":"Load Doc"}
+          </button>
+        </div>
+        {err&&<div style={{marginTop:6,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"6px 10px"}}>{err}</div>}
+      </div>
+      {preview&&(<>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>Preview</div>
+          <div style={{background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:10,padding:"10px 12px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#1f2937",marginBottom:6}}>📄 {preview.title}</div>
+            <div style={{fontSize:11,fontFamily:"monospace",color:"#4b5563",lineHeight:1.6,maxHeight:200,overflowY:"auto",whiteSpace:"pre-wrap"}}>{preview.text.slice(0,1200)}{preview.text.length>1200?"…\n\n(preview truncated — full content will be imported)":""}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
+          <button onClick={()=>onImport([{id:uid(),title:preview.title,raw:preview.text,source:"docs",docUrl:url}])} style={{padding:"8px 18px",border:"none",borderRadius:8,background:"#7c3aed",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Import Document</button>
+        </div>
+      </>)}
+      {!preview&&!err&&<div style={{textAlign:"center",padding:"20px 0",color:"#9ca3af",fontSize:11}}>Paste a Doc URL above and click "Load Doc" to preview.</div>}
+    </div>
+  </div>);
+}
+
+// ── Manual Entry Modal ─────────────────────────────────────────────────────
+function EntryModal({type,entry,onSave,onClose}){
+  const[title,setTitle]=useState(entry?.title||"");
+  const[raw,setRaw]=useState(entry?.raw||"");
+  const handlePaste=e=>{e.preventDefault();setRaw(parsePaste(e.clipboardData.getData("text")));};
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:"#fff",borderRadius:16,padding:22,width:560,maxWidth:"95vw",maxHeight:"88vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+        <span style={{fontSize:20}}>{type.icon}</span>
+        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>{type.label}</div><div style={{fontSize:11,color:"#9ca3af"}}>{entry?"Edit entry":"New entry"}</div></div>
+        <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
+      </div>
+      <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Entry Label (optional)</label>
+      <input value={title} onChange={e=>setTitle(e.target.value)} placeholder='e.g. "Fall Visit", "Spring Survey #2"'
+        style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none",marginBottom:12}}/>
+      <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Report Data</label>
+      <p style={{fontSize:11,color:"#7c3aed",margin:"0 0 5px"}}>Paste from Google Sheets — tab-separated data is auto-formatted.</p>
+      <textarea value={raw} onChange={e=>setRaw(e.target.value)} onPaste={handlePaste} placeholder="Paste or type here…"
+        style={{width:"100%",height:200,fontSize:11,fontFamily:"monospace",border:"1px solid #e5e7eb",borderRadius:8,padding:"9px 11px",resize:"none",outline:"none",lineHeight:1.5,marginBottom:14}}/>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+        <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
+        <button onClick={()=>raw.trim()&&onSave({title,raw})} disabled={!raw.trim()} style={{padding:"8px 18px",border:"none",borderRadius:8,background:raw.trim()?"#7c3aed":"#e5e7eb",color:raw.trim()?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:raw.trim()?"pointer":"not-allowed"}}>Save Entry</button>
+      </div>
+    </div>
+  </div>);
+}
+
+// ── Report Type Row ────────────────────────────────────────────────────────
+function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
+  const[open,setOpen]=useState(false);
+  const[showSheet,setShowSheet]=useState(false);
+  const[showDoc,setShowDoc]=useState(false);
+  const pct=Math.min(100,Math.round((entries.length/type.min)*100));
+  const barCol=entries.length>=type.min?"#10b981":entries.length>0?"#f59e0b":"#e5e7eb";
+  const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:{};
+  return(<>
+    <div style={{border:"1px solid",borderColor:entries.length?"#d1fae5":"#ebebeb",borderRadius:9,background:entries.length?"#f9fffe":"#fafafa",marginBottom:4}}>
+      <button style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"8px 11px",border:"none",background:"none",cursor:"pointer",textAlign:"left"}} onClick={()=>setOpen(o=>!o)}>
+        <span style={{fontSize:15}}>{type.icon}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:700,fontSize:12,color:"#1f2937"}}>{type.label}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
+            <div style={{height:3,width:72,background:"#e5e7eb",borderRadius:2,overflow:"hidden"}}>
+              <div style={{height:"100%",width:pct+"%",background:barCol,borderRadius:2}}/>
+            </div>
+            <span style={{fontSize:9,color:"#9ca3af"}}>{entries.length}/{type.min} min</span>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:5}}>
+          {apiKey&&(<>
+            <button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>
+            <button onClick={e=>{e.stopPropagation();setShowDoc(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #1d6fb8",background:"none",color:"#1d6fb8",fontSize:10,fontWeight:700,cursor:"pointer"}}>📄 Doc</button>
+          </>)}
+          <button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>
+        </div>
+        <span style={{color:"#d1d5db",fontSize:10,marginLeft:3}}>{open?"▲":"▼"}</span>
+      </button>
+      {open&&(<div style={{padding:"0 11px 9px",display:"flex",flexDirection:"column",gap:3}}>
+        {entries.length===0&&<div style={{fontSize:11,color:"#9ca3af",padding:"5px 0",textAlign:"center"}}>No entries yet.</div>}
+        {entries.map((e,i)=>(<div key={e.id} style={{display:"flex",alignItems:"center",gap:6,background:"#fff",border:"1px solid #e5e7eb",borderRadius:7,padding:"5px 9px"}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,fontWeight:700,color:"#374151"}}>{e.title||`${type.label} #${i+1}`}</span>
+              {e.source&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:99,...srcStyle(e.source)}}>{e.source==="sheets"?"📊 Sheets":"📄 Doc"}</span>}
+            </div>
+            <div style={{fontSize:10,color:"#9ca3af",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.raw?.slice(0,70)}…</div>
+          </div>
+          {(e.sheetUrl||e.docUrl)&&<a href={e.sheetUrl||e.docUrl} target="_blank" rel="noreferrer" style={{fontSize:10,color:"#7c3aed",textDecoration:"none",padding:"2px 7px",border:"1px solid #c4b5fd",borderRadius:5,background:"#faf5ff",whiteSpace:"nowrap"}}>Open ↗</a>}
+          <button onClick={()=>onEdit(i)} style={{padding:"2px 8px",borderRadius:5,border:"1px solid #e5e7eb",background:"#fff",fontSize:10,cursor:"pointer",color:"#6b7280"}}>Edit</button>
+          <button onClick={()=>onRemove(i)} style={{padding:"2px 6px",borderRadius:5,border:"none",background:"none",fontSize:13,cursor:"pointer",color:"#fca5a5"}}>×</button>
+        </div>))}
+      </div>)}
+    </div>
+    {showSheet&&<SheetImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowSheet(false);}} onClose={()=>setShowSheet(false)}/>}
+    {showDoc&&<DocImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowDoc(false);}} onClose={()=>setShowDoc(false)}/>}
+  </>);
+}
+
+// ── Year Panel ─────────────────────────────────────────────────────────────
+function YearPanel({year,isLatest,yearData,apiKey,onUpdate,onRemoveYear}){
+  const[open,setOpen]=useState(isLatest);
+  const[modal,setModal]=useState(null);
+  const totalEntries=Object.values(yearData.reports||{}).reduce((s,a)=>s+(a?.length||0),0);
+  const addEntries=(k,newE)=>{const prev=yearData.reports[k]||[];onUpdate({...yearData,reports:{...yearData.reports,[k]:[...prev,...newE]}});};
+  const editEntry=(k,i,d)=>{const arr=[...(yearData.reports[k]||[])];arr[i]={...arr[i],...d};onUpdate({...yearData,reports:{...yearData.reports,[k]:arr}});};
+  const removeEntry=(k,i)=>{const arr=[...(yearData.reports[k]||[])];arr.splice(i,1);onUpdate({...yearData,reports:{...yearData.reports,[k]:arr}});};
+  const activeModal=modal?REPORT_TYPES.find(r=>r.key===modal.typeKey):null;
+  return(<div style={{border:`1.5px solid ${isLatest?"#c4b5fd":"#e5e7eb"}`,borderRadius:12,marginBottom:8,overflow:"hidden",background:"#fff"}}>
+    <button style={{width:"100%",display:"flex",alignItems:"center",gap:9,padding:"10px 13px",border:"none",background:open?(isLatest?"#f5f3ff":"#fafafa"):"#fff",cursor:"pointer",textAlign:"left",borderBottom:open?"1px solid #e5e7eb":"none"}} onClick={()=>setOpen(o=>!o)}>
+      <span style={{fontSize:12,fontWeight:800,color:isLatest?"#4c1d95":"#6b7280",background:isLatest?"#ede9fe":"#f3f4f6",padding:"3px 10px",borderRadius:6}}>{year}{isLatest?" ★":""}</span>
+      <span style={{fontSize:11,color:"#9ca3af"}}>{totalEntries} entr{totalEntries===1?"y":"ies"}</span>
+      {isLatest&&<span style={{fontSize:9,color:"#7c3aed",fontWeight:700,background:"#ede9fe",padding:"2px 7px",borderRadius:99}}>Current Year</span>}
+      <button onClick={e=>{e.stopPropagation();if(window.confirm(`Remove all data for ${year}?`))onRemoveYear();}} style={{marginLeft:"auto",padding:"2px 8px",borderRadius:5,border:"1px solid #fca5a5",background:"none",color:"#ef4444",fontSize:10,cursor:"pointer"}}>Remove</button>
+      <span style={{color:"#d1d5db",fontSize:10,marginLeft:3}}>{open?"▲":"▼"}</span>
+    </button>
+    {open&&(<div style={{padding:11}}>
+      {REPORT_TYPES.map(rt=>(<ReportTypeRow key={rt.key} type={rt} entries={yearData.reports[rt.key]||[]} apiKey={apiKey}
+        onAdd={()=>setModal({typeKey:rt.key})}
+        onImport={e=>addEntries(rt.key,e)}
+        onEdit={i=>setModal({typeKey:rt.key,entryIdx:i})}
+        onRemove={i=>removeEntry(rt.key,i)}/>))}
+    </div>)}
+    {activeModal&&(<EntryModal type={activeModal}
+      entry={modal.entryIdx!=null?(yearData.reports[modal.typeKey]||[])[modal.entryIdx]:null}
+      onSave={d=>{modal.entryIdx!=null?editEntry(modal.typeKey,modal.entryIdx,d):addEntries(modal.typeKey,[{id:uid(),...d}]);setModal(null);}}
+      onClose={()=>setModal(null)}/>)}
+  </div>);
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────
+function App(){
+  const init=loadState();
+  const[centers,setCenters]=useState(init.centers);
+  const[apiKey,setApiKeyState]=useState(init.apiKey);
+  const[sysAnalysis,setSysAnalysis]=useState(init.sysAnalysis);
+  const[active,setActive]=useState(Object.keys(init.centers)[0]);
+  const[mainTab,setMainTab]=useState("centers");
+  const[centerTab,setCenterTab]=useState("data");
+  const[loading,setLoading]=useState(false);
+  const[sysLoading,setSysLoading]=useState(false);
+  const[search,setSearch]=useState("");
+  const[addingCenter,setAddingCenter]=useState(false);
+  const[newName,setNewName]=useState("");
+  const[showAddYear,setShowAddYear]=useState(false);
+  const[selectedNewYear,setSelectedNewYear]=useState(SCHOOL_YEARS[0]);
+  const[showApiPanel,setShowApiPanel]=useState(false);
+
+  useEffect(()=>saveCenters(centers),[centers]);
+  useEffect(()=>saveSysAnalysis(sysAnalysis),[sysAnalysis]);
+
+  const handleSaveApiKey=useCallback(k=>{setApiKeyState(k);saveApiKey(k);if(k)setShowApiPanel(false);},[]);
+
+  const cd=centers[active]||{years:{},analysis:null};
+  const centerYears=useMemo(()=>Object.keys(cd.years||{}).sort((a,b)=>b.localeCompare(a)),[cd.years]);
+  const latestYear=centerYears[0]||null;
+  const hasAnalysis=!!cd.analysis;
+  const totalEntries=useMemo(()=>centerYears.reduce((s,y)=>s+Object.values(cd.years[y].reports||{}).reduce((ss,a)=>ss+(a?.length||0),0),0),[centerYears,cd.years]);
+  const analyzedCount=useMemo(()=>Object.values(centers).filter(v=>v.analysis).length,[centers]);
+  const filteredCenters=useMemo(()=>Object.keys(centers).filter(n=>n.toLowerCase().includes(search.toLowerCase())),[centers,search]);
+  const availableYears=SCHOOL_YEARS.filter(y=>!cd.years[y]);
+  const a=cd.analysis;const cy=a?.currentYear;const mt=a?.multiYearTrends;
+
+  const updateYearData=useCallback((yearKey,newData)=>setCenters(prev=>({...prev,[active]:{...prev[active],analysis:null,years:{...prev[active].years,[yearKey]:newData}}})),[active]);
+  const removeYear=useCallback(yearKey=>setCenters(prev=>{const y={...prev[active].years};delete y[yearKey];return{...prev,[active]:{...prev[active],years:y,analysis:null}};}),[active]);
+  const addYear=()=>{if(cd.years[selectedNewYear])return;setCenters(prev=>({...prev,[active]:{...prev[active],years:{...prev[active].years,[selectedNewYear]:{reports:{},analysis:null}}}}));setShowAddYear(false);};
+  const switchCenter=n=>{setActive(n);setCenterTab("data");};
+  const addCenter=()=>{const n=newName.trim();if(!n||centers[n])return;setCenters(prev=>({...prev,[n]:{years:{},analysis:null}}));setActive(n);setNewName("");setAddingCenter(false);setCenterTab("data");};
+
+  const runCenterAnalysis=async()=>{
+    setLoading(true);
+    try{
+      const sortedYears=[...centerYears].sort((a,b)=>a.localeCompare(b)).filter(y=>Object.values(cd.years[y].reports||{}).some(a=>a?.length)).map(y=>({year:y,data:cd.years[y]}));
+      const result=await analyzeCenterMultiYear(active,sortedYears,latestYear);
+      setCenters(prev=>({...prev,[active]:{...prev[active],analysis:result}}));
+      setCenterTab("analysis");
+    }catch(e){alert("Analysis failed.\n"+e.message);}
+    finally{setLoading(false);}
+  };
+  const runSystemsAnalysis=async()=>{
+    setSysLoading(true);
+    try{const r=await analyzeSystemsMultiYear(centers);setSysAnalysis(r);}
+    catch(e){alert("Systems analysis failed.\n"+e.message);}
+    finally{setSysLoading(false);}
+  };
+
+  const flagCount=name=>{const an=centers[name]?.analysis?.currentYear;if(!an)return 0;return(an.inconsistencies?.length||0)+(an.improvementThemes?.filter(t=>t.severity==="high").length||0);};
+
+  return(<div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#f8f7ff",overflow:"hidden"}}>
+    {/* Header */}
+    <div style={{background:"#fff",borderBottom:"1px solid #e5e7eb",padding:"9px 18px",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
+      <div style={{width:4,height:30,borderRadius:3,background:"linear-gradient(180deg,#7c3aed,#a78bfa)"}}/>
+      <div>
+        <div style={{fontSize:9,fontWeight:800,letterSpacing:"0.12em",color:"#7c3aed",textTransform:"uppercase"}}>Ivy Kids Systems</div>
+        <div style={{fontSize:16,fontWeight:800,color:"#1f2937",lineHeight:1.2}}>Quality Assurance Dashboard</div>
+      </div>
+      <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
+        {[["centers","🏫 Centers"],["systems","🌐 Systems Overview"]].map(([t,lbl])=>(<button key={t} onClick={()=>setMainTab(t)} style={{padding:"6px 13px",borderRadius:7,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",background:mainTab===t?"#7c3aed":"#f3f4f6",color:mainTab===t?"#fff":"#6b7280"}}>{lbl}</button>))}
+        <button onClick={()=>setShowApiPanel(s=>!s)} style={{padding:"6px 11px",borderRadius:7,fontSize:11,fontWeight:700,border:`1.5px solid ${apiKey?"#10b981":"#f59e0b"}`,background:apiKey?"#f0fdf4":"#fffbeb",color:apiKey?"#065f46":"#92400e",cursor:"pointer"}}>
+          {apiKey?"📊 Sheets ✓":"📊 Connect Sheets"}
+        </button>
+      </div>
+      <div style={{fontSize:10,color:"#9ca3af",display:"flex",alignItems:"center",gap:5}}>
+        <span style={{width:6,height:6,borderRadius:"50%",background:"#10b981",display:"inline-block"}}/>Claude AI
+      </div>
+    </div>
+
+    <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+      {/* Sidebar */}
+      <div style={{width:205,background:"#fff",borderRight:"1px solid #e5e7eb",display:"flex",flexDirection:"column",flexShrink:0}}>
+        <div style={{padding:"9px 9px 4px"}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search centers…" style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:7,padding:"5px 9px",fontSize:11,outline:"none",background:"#f9fafb"}}/></div>
+        <div style={{padding:"3px 8px 4px",fontSize:9,fontWeight:800,color:"#9ca3af",textTransform:"uppercase",letterSpacing:"0.1em"}}>{analyzedCount}/{Object.keys(centers).length} analyzed</div>
+        <div style={{flex:1,overflowY:"auto",padding:"0 6px 6px"}}>
+          {filteredCenters.map(name=>{
+            const flags=flagCount(name),isA=name===active,analyzed=!!centers[name].analysis;
+            const yrs=Object.keys(centers[name].years||{}).length;
+            const trend=centers[name].analysis?.multiYearTrends?.overallTrend;
+            const tm=trend?TREND_META[trend]:null;
+            return(<button key={name} onClick={()=>{switchCenter(name);setMainTab("centers");}} style={{width:"100%",textAlign:"left",padding:"7px 9px",borderRadius:7,border:"none",cursor:"pointer",marginBottom:1,background:isA?"#ede9fe":"transparent",color:isA?"#5b21b6":"#374151",display:"flex",alignItems:"center",gap:5}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:11,fontWeight:isA?700:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
+                <div style={{fontSize:9,color:analyzed?"#10b981":"#9ca3af",marginTop:1,display:"flex",alignItems:"center",gap:4}}>
+                  {analyzed&&<span>✓</span>}{tm&&<span style={{color:tm.color,fontWeight:700}}>{tm.icon}</span>}<span>{yrs} yr{yrs!==1?"s":""}</span>
+                </div>
+              </div>
+              {flags>0&&<span style={{background:"#ef4444",color:"#fff",borderRadius:99,fontSize:9,fontWeight:800,padding:"1px 5px",flexShrink:0}}>{flags}</span>}
+            </button>);
+          })}
+        </div>
+        <div style={{padding:8,borderTop:"1px solid #f3f4f6"}}>
+          {addingCenter?(<div style={{display:"flex",flexDirection:"column",gap:4}}>
+            <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCenter()} placeholder="Center name…" style={{border:"1px solid #ddd",borderRadius:6,padding:"5px 8px",fontSize:11,outline:"none"}}/>
+            <div style={{display:"flex",gap:3}}>
+              <button onClick={addCenter} style={{flex:1,background:"#7c3aed",color:"#fff",border:"none",borderRadius:6,padding:4,fontSize:10,fontWeight:700,cursor:"pointer"}}>Add</button>
+              <button onClick={()=>setAddingCenter(false)} style={{flex:1,border:"1px solid #ddd",background:"#fff",borderRadius:6,padding:4,fontSize:10,cursor:"pointer"}}>Cancel</button>
+            </div>
+          </div>):(<button onClick={()=>setAddingCenter(true)} style={{width:"100%",border:"2px dashed #d1d5db",borderRadius:7,padding:6,fontSize:10,color:"#9ca3af",background:"transparent",cursor:"pointer"}}>+ Add Center</button>)}
+        </div>
+      </div>
+
+      {/* Main */}
+      <div style={{flex:1,overflowY:"auto",padding:18}}>
+        <div style={{maxWidth:900,margin:"0 auto"}}>
+          {showApiPanel&&<ApiKeyPanel apiKey={apiKey} onSave={handleSaveApiKey}/>}
+
+          {/* Systems Tab */}
+          {mainTab==="systems"&&(<div>
+            <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:16,gap:12}}>
+              <div><h2 style={{fontSize:19,fontWeight:800,color:"#1f2937",margin:0}}>Systems-Level Overview</h2><p style={{fontSize:11,color:"#9ca3af",margin:"3px 0 0"}}>{analyzedCount} centers analyzed · Multi-year patterns</p></div>
+              <button onClick={runSystemsAnalysis} disabled={sysLoading||analyzedCount<2} style={{padding:"8px 16px",borderRadius:8,border:"none",fontSize:11,fontWeight:800,cursor:sysLoading||analyzedCount<2?"not-allowed":"pointer",background:sysLoading||analyzedCount<2?"#e5e7eb":"linear-gradient(135deg,#7c3aed,#a855f7)",color:sysLoading||analyzedCount<2?"#9ca3af":"#fff"}}>
+                {sysLoading?"🔄 Analyzing…":"🌐 Run Systems Analysis"}
+              </button>
+            </div>
+            {analyzedCount<2&&!sysAnalysis&&(<div style={{textAlign:"center",padding:"50px 20px",color:"#9ca3af",fontSize:12,background:"#fff",borderRadius:14,border:"2px dashed #e5e7eb"}}><div style={{fontSize:28,marginBottom:10}}>🌐</div>Analyze at least 2 centers to unlock.<br/><span style={{fontSize:10}}>({analyzedCount}/2 minimum)</span></div>)}
+            {sysAnalysis&&(<div>
+              <div style={{background:"#fff",borderRadius:14,border:"1px solid #e5e7eb",padding:16,display:"flex",gap:14,alignItems:"center",marginBottom:10}}>
+                <ScoreRing score={sysAnalysis.systemScore}/>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><span style={{fontSize:9,fontWeight:800,color:"#9ca3af",textTransform:"uppercase",letterSpacing:"0.08em"}}>System-Wide Summary</span>{sysAnalysis.systemTrend&&<TrendBadge trend={sysAnalysis.systemTrend}/>}</div>
+                  <p style={{fontSize:12,color:"#374151",lineHeight:1.65,margin:0}}>{sysAnalysis.overview}</p>
+                </div>
+              </div>
+              <SectionCard title="📊 Center Rankings" subtitle="Click name to open" accentColor="#7c3aed">
+                {sysAnalysis.centerRankings?.sort((a,b)=>b.currentScore-a.currentScore).map((c,i)=>{
+                  const s=STATUS_MAP[c.status]||STATUS_MAP.on_track;const tm=TREND_META[c.trend]||TREND_META.stable;
+                  return(<div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 9px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
+                    <span style={{fontSize:11,color:"#9ca3af",fontWeight:700,width:18,textAlign:"center"}}>{i+1}</span>
+                    <button onClick={()=>{switchCenter(c.center);setMainTab("centers");setCenterTab(centers[c.center]?.analysis?"analysis":"data");}} style={{flex:1,textAlign:"left",border:"none",background:"none",cursor:"pointer",fontSize:11,color:"#1f2937",fontWeight:600}}>{c.center}</button>
+                    <span style={{fontSize:10,fontWeight:700,color:tm.color}}>{tm.icon} {c.trend}</span>
+                    <span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,background:s.bg,color:s.color}}>{s.label}</span>
+                    <div style={{width:64,height:5,background:"#e5e7eb",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:c.currentScore+"%",background:c.currentScore>=75?"#10b981":c.currentScore>=50?"#f59e0b":"#ef4444",borderRadius:3}}/></div>
+                    <span style={{fontSize:11,fontWeight:800,color:c.currentScore>=75?"#10b981":c.currentScore>=50?"#f59e0b":"#ef4444",width:24,textAlign:"right"}}>{c.currentScore}</span>
+                  </div>);
+                })}
+              </SectionCard>
+              {sysAnalysis.systemicPersistentConcerns?.length>0&&<SectionCard title="🔴 Systemic & Persistent Concerns" subtitle="Multiple centers, multiple years" accentColor="#ef4444">{sysAnalysis.systemicPersistentConcerns.map((c,i)=><ThemeBlock key={i} item={c} type="concern"/>)}</SectionCard>}
+              {sysAnalysis.systemicCurrentConcerns?.length>0&&<SectionCard title="🟠 Systemic Current Concerns" subtitle="Multiple centers, this year" accentColor="#f59e0b">{sysAnalysis.systemicCurrentConcerns.map((c,i)=><ThemeBlock key={i} item={c} type="concern"/>)}</SectionCard>}
+              {sysAnalysis.systemWideStrengths?.length>0&&<SectionCard title="✅ System-Wide Strengths" accentColor="#10b981">{sysAnalysis.systemWideStrengths.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
+              {sysAnalysis.isolatedConcerns?.length>0&&<SectionCard title="🟡 Isolated Concerns" subtitle="Center-specific" accentColor="#f59e0b" collapsible defaultOpen={false}>{sysAnalysis.isolatedConcerns.map((c,i)=><ThemeBlock key={i} item={c} type="concern"/>)}</SectionCard>}
+              {sysAnalysis.inconsistencyPattern&&<SectionCard title="⚠️ Inconsistency Patterns" accentColor="#f59e0b"><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{sysAnalysis.inconsistencyPattern}</p></SectionCard>}
+              {sysAnalysis.accreditationOutlook&&<SectionCard title="🎓 Cognia Accreditation Outlook" accentColor="#7c3aed"><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{sysAnalysis.accreditationOutlook}</p></SectionCard>}
+              {sysAnalysis.priorityActions?.length>0&&<SectionCard title="📋 System-Level Priority Actions" accentColor="#6366f1">
+                {sysAnalysis.priorityActions.map((act,i)=>{const pc=PRIORITY_COLOR[act.priority]||"#6b7280";return(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 10px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
+                  <span style={{fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:99,background:pc+"22",color:pc,border:`1px solid ${pc}40`,flexShrink:0,marginTop:1}}>{(act.priority||"").replace("_"," ")}</span>
+                  <div style={{flex:1,fontSize:11,color:"#374151"}}>{act.action}</div>
+                  <span style={{fontSize:9,color:"#9ca3af",flexShrink:0}}>{act.scope==="all_centers"?"All centers":act.centers?.join(", ")}</span>
+                </div>);})}
+              </SectionCard>}
+            </div>)}
+          </div>)}
+
+          {/* Centers Tab */}
+          {mainTab==="centers"&&(<>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:10,flexWrap:"wrap"}}>
+              <div><h2 style={{fontSize:19,fontWeight:800,color:"#1f2937",margin:0}}>{active}</h2><p style={{fontSize:11,color:"#9ca3af",margin:"3px 0 0"}}>{centerYears.length} school year{centerYears.length!==1?"s":""} · {totalEntries} total entries</p></div>
+              <div style={{display:"flex",gap:6}}>
+                {[["data","📋 Data Entry"],["analysis","🧠 Analysis"]].map(([t,lbl])=>(<button key={t} onClick={()=>setCenterTab(t)} disabled={t==="analysis"&&!hasAnalysis} style={{padding:"6px 12px",borderRadius:7,fontSize:11,fontWeight:700,border:"none",cursor:(t==="analysis"&&!hasAnalysis)?"not-allowed":"pointer",background:centerTab===t?"#7c3aed":"#f3f4f6",color:centerTab===t?"#fff":"#6b7280",opacity:(t==="analysis"&&!hasAnalysis)?0.4:1}}>{lbl}</button>))}
+              </div>
+            </div>
+
+            {centerTab==="data"&&(<div>
+              {!apiKey&&(<div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:10,padding:"10px 13px",marginBottom:12,display:"flex",alignItems:"center",gap:10,fontSize:11,color:"#92400e"}}>
+                <span>💡</span><span>Connect Google Sheets &amp; Docs to import directly from URLs. <button onClick={()=>setShowApiPanel(true)} style={{background:"none",border:"none",color:"#7c3aed",fontWeight:700,cursor:"pointer",fontSize:11,padding:0}}>Set up now →</button></span>
+              </div>)}
+              {centerYears.length===0&&(<div style={{textAlign:"center",padding:"36px 20px",color:"#9ca3af",fontSize:12,background:"#fff",borderRadius:12,border:"2px dashed #e5e7eb",marginBottom:10}}><div style={{fontSize:26,marginBottom:8}}>📅</div>No school years added yet. Add a year below to get started.</div>)}
+              {centerYears.map((year,i)=>(<YearPanel key={year} year={year} isLatest={i===0} yearData={cd.years[year]} apiKey={apiKey} onUpdate={d=>updateYearData(year,d)} onRemoveYear={()=>removeYear(year)}/>))}
+              {availableYears.length>0&&(showAddYear?(
+                <div style={{display:"flex",gap:8,alignItems:"center",padding:10,border:"1px solid #e5e7eb",borderRadius:9,background:"#fff",marginBottom:8}}>
+                  <span style={{fontSize:12,color:"#6b7280",fontWeight:600}}>School year:</span>
+                  <select value={selectedNewYear} onChange={e=>setSelectedNewYear(e.target.value)} style={{border:"1px solid #e5e7eb",borderRadius:6,padding:"4px 8px",fontSize:12,outline:"none"}}>
+                    {availableYears.map(y=><option key={y}>{y}</option>)}
+                  </select>
+                  <button onClick={addYear} style={{padding:"5px 14px",borderRadius:7,border:"none",background:"#7c3aed",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Add</button>
+                  <button onClick={()=>setShowAddYear(false)} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #e5e7eb",background:"#fff",fontSize:11,cursor:"pointer",color:"#9ca3af"}}>Cancel</button>
+                </div>
+              ):(<button onClick={()=>setShowAddYear(true)} style={{width:"100%",border:"2px dashed #c4b5fd",borderRadius:9,padding:10,fontSize:12,color:"#7c3aed",background:"#faf5ff",cursor:"pointer",marginBottom:8,fontWeight:600}}>+ Add School Year</button>))}
+              <button onClick={runCenterAnalysis} disabled={loading||totalEntries===0} style={{width:"100%",padding:12,borderRadius:10,fontSize:12,fontWeight:800,border:"none",cursor:loading||totalEntries===0?"not-allowed":"pointer",background:loading||totalEntries===0?"#e5e7eb":"linear-gradient(135deg,#7c3aed,#a855f7)",color:loading||totalEntries===0?"#9ca3af":"#fff",boxShadow:loading||totalEntries===0?"none":"0 4px 14px rgba(124,58,237,0.28)"}}>
+                {loading?`🔄 Analyzing ${centerYears.length} year${centerYears.length!==1?"s":""} of data…`:`🧠 Analyze All Years (${totalEntries} total entries)`}
+              </button>
+              {totalEntries===0&&<p style={{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:5}}>Add at least one entry to run analysis.</p>}
+            </div>)}
+
+            {centerTab==="analysis"&&a&&cy&&(<div>
+              <div style={{background:"#fff",borderRadius:14,border:"2px solid #ede9fe",padding:16,display:"flex",gap:14,alignItems:"center",marginBottom:10}}>
+                <ScoreRing score={cy.score}/>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:800,color:"#4c1d95",background:"#ede9fe",padding:"2px 9px",borderRadius:6}}>{cy.year} ★ Current Year</span>
+                    {mt?.overallTrend&&<span style={{fontSize:10,color:"#6b7280"}}>Multi-year: <TrendBadge trend={mt.overallTrend}/></span>}
+                  </div>
+                  <p style={{fontSize:12,color:"#374151",lineHeight:1.65,margin:0}}>{cy.summary}</p>
+                </div>
+              </div>
+              {mt?.yearlyScores?.length>1&&(<div style={{background:"#fff",borderRadius:12,border:"1px solid #e5e7eb",padding:"12px 14px",marginBottom:10}}>
+                <div style={{fontSize:10,fontWeight:800,color:"#9ca3af",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Score History</div>
+                <div style={{display:"flex",gap:3,alignItems:"flex-end",height:66}}>
+                  {[...mt.yearlyScores].sort((a,b)=>a.year.localeCompare(b.year)).map((y,i,arr)=>(<ScoreBar key={i} score={y.score} label={y.year} isLatest={i===arr.length-1}/>))}
+                </div>
+                {mt.yearlyScores.some(y=>y.headline)&&(<div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4}}>
+                  {[...mt.yearlyScores].sort((a,b)=>a.year.localeCompare(b.year)).map((y,i)=>y.headline?(<span key={i} style={{fontSize:9,color:"#6b7280",background:"#f3f4f6",borderRadius:6,padding:"2px 7px"}}><b style={{color:"#4c1d95"}}>{y.year}</b> · {y.headline}</span>):null)}
+                </div>)}
+              </div>)}
+              {cy.strengthThemes?.length>0&&<SectionCard title="✅ This Year's Strengths" subtitle={`${cy.strengthThemes.length} themes · ${cy.year}`} accentColor="#10b981">{cy.strengthThemes.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
+              {cy.improvementThemes?.length>0&&<SectionCard title="⚠️ This Year's Areas for Improvement" subtitle={`${cy.year}`} accentColor="#f59e0b">{cy.improvementThemes.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
+              {cy.classroomSpotlights?.length>0&&<SectionCard title="🏫 Classroom Spotlights" subtitle={cy.year} accentColor="#8b5cf6">
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  {cy.classroomSpotlights.map((c,i)=>{const ok=c.status==="performing_well";return(<div key={i} style={{borderRadius:9,padding:9,background:ok?"#f0fdf4":"#fffbeb",border:`1px solid ${ok?"#a7f3d0":"#fcd34d"}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:4,flexWrap:"wrap"}}>
+                      <span style={{fontSize:9,fontWeight:800,padding:"1px 7px",borderRadius:99,background:ok?"#d1fae5":"#fef3c7",color:ok?"#065f46":"#92400e"}}>{ok?"● Well":"● Attention"}</span>
+                      <span style={{fontSize:11,fontWeight:700,color:"#1f2937"}}>{c.classroom}</span>
+                    </div>
+                    <ul style={{margin:0,paddingLeft:13}}>{c.highlights?.map((h,j)=><li key={j} style={{fontSize:10,color:"#4b5563",marginBottom:2}}>{h}</li>)}</ul>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:2,marginTop:4}}>{c.sources?.map(s=><Pill key={s} text={s.toUpperCase()} color="#374151" bg="#f3f4f6"/>)}</div>
+                  </div>);})}
+                </div>
+              </SectionCard>}
+              {cy.inconsistencies?.length>0&&<SectionCard title="🚨 Cross-Report Inconsistencies" subtitle={`${cy.inconsistencies.length} found · ${cy.year}`} accentColor="#ef4444">{cy.inconsistencies.map((item,i)=><InconsistencyBlock key={i} item={item}/>)}</SectionCard>}
+              {cy.accreditationRisks?.length>0&&<SectionCard title="🎓 Cognia Accreditation Risks" subtitle={cy.year} accentColor="#ef4444">
+                {cy.accreditationRisks.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:8,marginBottom:5}}>
+                  <span style={{fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:99,background:SEVERITY_COLOR[r.severity]+"22",color:SEVERITY_COLOR[r.severity],flexShrink:0,marginTop:1}}>{r.severity}</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:"#991b1b"}}>{r.risk}</div>{r.standard&&<div style={{fontSize:10,color:"#b91c1c",marginTop:1}}>Cognia: {r.standard}</div>}</div>
+                </div>))}
+              </SectionCard>}
+              {cy.recommendedActions?.length>0&&<SectionCard title="📋 Recommended Actions" subtitle={`For ${cy.year}`} accentColor="#6366f1">
+                {cy.recommendedActions.map((act,i)=>{const pc=PRIORITY_COLOR[act.priority]||"#6b7280";return(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
+                  <span style={{fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:99,background:pc+"22",color:pc,border:`1px solid ${pc}40`,flexShrink:0,marginTop:1}}>{(act.priority||"").replace("_"," ")}</span>
+                  <div style={{flex:1,fontSize:11,color:"#374151"}}>{act.action}</div>
+                  <div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:9,color:"#9ca3af",fontWeight:600}}>{act.owner}</div>{act.linkedTheme&&<div style={{fontSize:9,color:"#a78bfa",marginTop:1}}>↳ {act.linkedTheme}</div>}</div>
+                </div>);})}
+              </SectionCard>}
+              {mt&&(<div style={{marginTop:4}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0 6px"}}>
+                  <div style={{flex:1,height:1,background:"#e5e7eb"}}/>
+                  <span style={{fontSize:10,color:"#9ca3af",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",whiteSpace:"nowrap"}}>Multi-Year Trends</span>
+                  <div style={{flex:1,height:1,background:"#e5e7eb"}}/>
+                </div>
+                {mt.persistentStrengths?.length>0&&<SectionCard title="🏅 Persistent Strengths" subtitle="Consistent across years" accentColor="#10b981" collapsible defaultOpen={true}>{mt.persistentStrengths.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
+                {mt.persistentConcerns?.length>0&&<SectionCard title="🔁 Persistent Concerns" subtitle="Recurring across years" accentColor="#ef4444" collapsible defaultOpen={true}>{mt.persistentConcerns.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
+                {mt.emergingStrengths?.length>0&&<SectionCard title="🌱 Emerging Strengths" accentColor="#10b981" collapsible defaultOpen={false}>{mt.emergingStrengths.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
+                {mt.resolvedConcerns?.length>0&&<SectionCard title="✔️ Resolved Concerns" accentColor="#6b7280" collapsible defaultOpen={false}>
+                  {mt.resolvedConcerns.map((s,i)=>(<div key={i} style={{borderLeft:"3px solid #9ca3af",padding:"6px 6px 6px 10px",background:"#f9fafb",borderRadius:"0 7px 7px 0",marginBottom:6}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#6b7280",marginBottom:2}}>{s.theme} <span style={{fontSize:9,color:"#9ca3af"}}>— resolved {s.resolvedIn}</span></div>
+                    <p style={{fontSize:11,color:"#6b7280",margin:0}}>{s.detail}</p>
+                  </div>))}
+                </SectionCard>}
+                {mt.classroomPatterns?.length>0&&<SectionCard title="🏫 Classroom Trends Over Time" collapsible defaultOpen={false} accentColor="#8b5cf6">
+                  {mt.classroomPatterns.map((c,i)=>(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 9px",background:"#faf5ff",border:"1px solid #ede9fe",borderRadius:8,marginBottom:5}}>
+                    <span style={{fontSize:11,fontWeight:700,color:"#4c1d95",minWidth:80}}>{c.classroom}</span>
+                    <div style={{flex:1,fontSize:11,color:"#374151"}}>{c.pattern}</div>
+                    <TrendBadge trend={c.trend}/>
+                  </div>))}
+                </SectionCard>}
+                {mt.inconsistencyPattern&&<SectionCard title="⚠️ Inconsistency Trend" accentColor="#f59e0b" collapsible defaultOpen={false}><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{mt.inconsistencyPattern}</p></SectionCard>}
+                {mt.accreditationTrajectory&&<SectionCard title="🎓 Accreditation Trajectory" accentColor="#7c3aed" collapsible defaultOpen={false}><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{mt.accreditationTrajectory}</p></SectionCard>}
+              </div>)}
+              <button onClick={()=>setCenterTab("data")} style={{width:"100%",padding:9,borderRadius:8,border:"2px dashed #d1d5db",background:"transparent",fontSize:11,color:"#9ca3af",cursor:"pointer",marginTop:4}}>← Return to data entry</button>
+            </div>)}
+          </>)}
+        </div>
+      </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
