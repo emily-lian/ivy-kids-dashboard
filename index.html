@@ -116,12 +116,17 @@ async function fetchDocContent(docId,apiKey){
   return{title:d.title||"Untitled",text:docBodyToText(d.body?.content)};
 }
 
-// ── Claude API ─────────────────────────────────────────────────────────────
+// ── Gemini API ─────────────────────────────────────────────────────────────
 async function callClaude(prompt){
-  const res=await fetch(`${PROXY}/anthropic`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
+  const res=await fetch(`${PROXY}/gemini`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({prompt})
+  });
   if(!res.ok)throw new Error(`API ${res.status}`);
   const data=await res.json();
-  const text=data.content?.find(b=>b.type==="text")?.text||"";
+  const text=data.candidates?.[0]?.content?.parts?.[0]?.text||"";
+  if(!text)throw new Error("Empty response from Gemini");
   return JSON.parse(text.replace(/```json|```/g,"").trim());
 }
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
