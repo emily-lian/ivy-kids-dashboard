@@ -137,7 +137,7 @@ async function callClaude(prompt){
 }
 
 // truncate a single entry's raw text
-function truncateEntry(raw, maxChars=1500){
+function truncateEntry(raw, maxChars=400){
   if(!raw||raw.length<=maxChars) return raw;
   return raw.slice(0,maxChars)+"…[truncated]";
 }
@@ -145,19 +145,21 @@ function truncateEntry(raw, maxChars=1500){
 // summarize all entries for one report type in one year
 async function summarizeReportType(center, year, reportType, entries){
   if(!entries?.length) return null;
-  const content=entries.map((e,i)=>`--- Entry ${i+1}${e.title?" ("+e.title+")":""} ---\n${truncateEntry(e.raw,1500)}`).join("\n\n");
-  const prompt=`You are an early childhood education QA expert. Summarize the following ${reportType} data for ${center} (${year}) into a concise paragraph of 150 words or less. Focus on: overall rating/score if present, key strengths, key concerns, specific classrooms or teachers mentioned, and any notable patterns across entries. Be specific — include actual scores, names, and observations where present.
-
-${content}
-
-Respond with ONLY the summary paragraph, no JSON, no headers.`;
+  // ultra-aggressive truncation per entry before summarizing
+  const content=entries.map((e,i)=>`--- Entry ${i+1}${e.title?" ("+e.title+")":""} ---\n${truncateEntry(e.raw,400)}`).join("\n\n");
+  const prompt=`Summarize this ${reportType} data for ${center} (${year}) in 100 words or less. Include: overall quality rating if present, top 2 strengths, top 2 concerns, any classrooms or staff mentioned.\n\n${content}\n\nRespond with ONLY the summary, no headers.`;
   const res=await fetch(`${PROXY}/anthropic`,{
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:300,messages:[{role:"user",content:prompt}]})
+    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:200,messages:[{role:"user",content:prompt}]})
   });
   const raw=await res.text();
-  if(!res.ok) return `[Summary unavailable: ${res.status}]`;
+  if(!res.ok){
+    const err=JSON.parse(raw);
+    // if still too long, return a placeholder so we don't block the whole analysis
+    if(err?.error?.type==="invalid_request_error") return `[${reportType} ${year}: data too large to summarize — paste key findings manually]`;
+    return `[Summary unavailable: ${res.status}]`;
+  }
   const data=JSON.parse(raw);
   return data.content?.find(b=>b.type==="text")?.text||"[No summary]";
 }
@@ -592,6 +594,7 @@ function App(){
   const[mainTab,setMainTab]=useState("centers");
   const[centerTab,setCenterTab]=useState("data");
   const[loading,setLoading]=useState(false);
+  const[loadingMsg,setLoadingMsg]=useState("");
   const[sysLoading,setSysLoading]=useState(false);
   const[search,setSearch]=useState("");
   const[addingCenter,setAddingCenter]=useState(false);
@@ -622,14 +625,15 @@ function App(){
   const addCenter=()=>{const n=newName.trim();if(!n||centers[n])return;setCenters(prev=>({...prev,[n]:{years:{},analysis:null}}));setActive(n);setNewName("");setAddingCenter(false);setCenterTab("data");};
 
   const runCenterAnalysis=async()=>{
-    setLoading(true);
+    setLoading(true);setLoadingMsg("Preparing reports…");
     try{
       const sortedYears=[...centerYears].sort((a,b)=>a.localeCompare(b)).filter(y=>Object.values(cd.years[y].reports||{}).some(a=>a?.length)).map(y=>({year:y,data:cd.years[y]}));
-      const result=await analyzeCenterMultiYear(active,sortedYears,latestYear);
+      setLoadingMsg(`Summarizing ${sortedYears.length} year${sortedYears.length!==1?"s":""} of data…`);
+      const result=await analyzeCenterMultiYear(active,sortedYears,latestYear,setLoadingMsg);
       setCenters(prev=>({...prev,[active]:{...prev[active],analysis:result}}));
       setCenterTab("analysis");
     }catch(e){alert("Analysis failed.\n"+e.message);}
-    finally{setLoading(false);}
+    finally{setLoading(false);setLoadingMsg("");}
   };
   const runSystemsAnalysis=async()=>{
     setSysLoading(true);
@@ -778,7 +782,7 @@ function App(){
                 </div>
               ):(<button onClick={()=>setShowAddYear(true)} style={{width:"100%",border:"2px dashed #c4b5fd",borderRadius:9,padding:10,fontSize:12,color:"#7c3aed",background:"#faf5ff",cursor:"pointer",marginBottom:8,fontWeight:600}}>+ Add School Year</button>))}
               <button onClick={runCenterAnalysis} disabled={loading||totalEntries===0} style={{width:"100%",padding:12,borderRadius:10,fontSize:12,fontWeight:700,border:"none",cursor:loading||totalEntries===0?"not-allowed":"pointer",background:loading||totalEntries===0?"#e5e7eb":`linear-gradient(135deg,${IVY_NAVY},${IVY_BLUE})`,color:loading||totalEntries===0?"#9ca3af":"#fff",boxShadow:loading||totalEntries===0?"none":`0 4px 14px ${IVY_NAVY}50`}}>
-                {loading?`🔄 Analyzing ${centerYears.length} year${centerYears.length!==1?"s":""} of data…`:`🧠 Analyze All Years (${totalEntries} total entries)`}
+                {loading?`🔄 ${loadingMsg||"Analyzing…"}`:`🧠 Analyze All Years (${totalEntries} total entries)`}
               </button>
               {totalEntries===0&&<p style={{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:5}}>Add at least one entry to run analysis.</p>}
             </div>)}
