@@ -21,7 +21,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const{useState,useCallback,useMemo,useEffect}=React;
+const{useState,useCallback,useMemo,useEffect,useRef}=React;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const REPORT_TYPES=[
@@ -116,6 +116,66 @@ async function fetchDocContent(docId,apiKey){
   return{title:d.title||"Untitled",text:docBodyToText(d.body?.content)};
 }
 
+// ── QA PDF Parser ──────────────────────────────────────────────────────────
+async function parseQAPdf(file){
+  const base64=await new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result.split(",")[1]);
+    reader.onerror=reject;
+    reader.readAsDataURL(file);
+  });
+  const res=await fetch(`${PROXY}/qa/parse`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({pdfBase64:base64}),
+  });
+  if(!res.ok){
+    const err=await res.text();
+    throw new Error(`QA parse failed: ${err.slice(0,200)}`);
+  }
+  return res.json();
+}
+
+// format parsed QA JSON into readable text for AI analysis
+function formatQADataAsText(qaData){
+  const{visit,classrooms,ed_observations,center_operations,overall}=qaData;
+  const lines=[];
+  lines.push(`QA Visit: ${visit.date} (${visit.school_year})`);
+  lines.push(`Consultant: ${visit.consultant||"N/A"}`);
+  if(visit.center_director) lines.push(`Center Director: ${visit.center_director}`);
+  if(visit.education_director) lines.push(`Education Director: ${visit.education_director}`);
+  lines.push(`Overall Score: ${overall.overall_score}% — ${overall.is_passing?"PASSING":"FAILING"}`);
+  lines.push(`Classrooms Average: ${overall.classrooms_avg}%`);
+  if(overall.center_noncompliant) lines.push(`⚠ CENTER NON-COMPLIANCE: ${overall.nc_classroom_count} classroom(s) flagged`);
+  lines.push("");
+  lines.push("CLASSROOM SCORES:");
+  classrooms.forEach(c=>{
+    lines.push(`  ${c.name} (${c.teachers}): ${c.score_pct}%${c.is_noncompliant?" [NON-COMPLIANCE]":""}`);
+    if(c.missed_items?.length){
+      c.missed_items.forEach(m=>lines.push(`    MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
+    }
+    if(c.notable_positives?.length){
+      c.notable_positives.forEach(p=>lines.push(`    POSITIVE: ${p}`));
+    }
+  });
+  if(ed_observations?.score_pct!=null){
+    lines.push("");
+    lines.push(`ED OBSERVATIONS & ASSESSMENTS: ${ed_observations.score_pct}%${ed_observations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
+    ed_observations.missed_items?.forEach(m=>lines.push(`  MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
+  }
+  if(center_operations?.score_pct!=null){
+    lines.push("");
+    lines.push(`CENTER OPERATIONS: ${center_operations.score_pct}%${center_operations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
+    center_operations.missed_items?.forEach(m=>lines.push(`  MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
+  }
+  if(overall.cross_classroom_patterns?.length){
+    lines.push("");
+    lines.push("CROSS-CLASSROOM PATTERNS:");
+    overall.cross_classroom_patterns.forEach(p=>lines.push(`  • ${p}`));
+  }
+  return lines.join("\n");
+}
+
 // ── Anthropic API ──────────────────────────────────────────────────────────
 async function callClaude(prompt){
   const chars=prompt.length;
@@ -142,53 +202,46 @@ async function callClaude(prompt){
   return JSON.parse(cleaned.slice(start,end+1));
 }
 
-// truncate a single entry's raw text
-function truncateEntry(raw, maxChars=300){
-  if(!raw||raw.length<=maxChars) return raw;
+function truncateEntry(raw,maxChars=300){
+  if(!raw||raw.length<=maxChars)return raw;
   return raw.slice(0,maxChars)+"…[truncated]";
 }
+function estimateTokens(text){return Math.ceil((text||"").length/4);}
 
-// get a rough token estimate (1 token ≈ 4 chars)
-function estimateTokens(text){ return Math.ceil((text||"").length/4); }
-
-// summarize all entries for one report type in one year
-async function summarizeReportType(center, year, reportType, entries){
-  if(!entries?.length) return null;
-  // truncate each entry very aggressively
+async function summarizeReportType(center,year,reportType,entries){
+  if(!entries?.length)return null;
   const content=entries.map((e,i)=>{
     const truncated=truncateEntry(e.raw,300);
-    return `Entry ${i+1}${e.title?" ("+e.title+")":""}: ${truncated}`;
+    return`Entry ${i+1}${e.title?" ("+e.title+")":""}: ${truncated}`;
   }).join("\n");
-  // if still too long, truncate the whole content block
   const safeContent=content.length>4000?content.slice(0,4000)+"…[truncated]":content;
   const prompt=`Summarize this ${reportType} for ${center} (${year}) in 80 words max. Include: quality level, top strength, top concern, any classrooms mentioned.\n\n${safeContent}\n\nOnly the summary, no headers.`;
-  // safety check
-  if(estimateTokens(prompt)>5000) return `[${reportType} ${year}: too large — key findings: see raw data]`;
+  if(estimateTokens(prompt)>5000)return`[${reportType} ${year}: too large — key findings: see raw data]`;
   const res=await fetch(`${PROXY}/anthropic`,{
     method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:150,messages:[{role:"user",content:prompt}]})
   });
   const raw=await res.text();
-  if(!res.ok) return `[${reportType} ${year}: summary unavailable]`;
+  if(!res.ok)return`[${reportType} ${year}: summary unavailable]`;
   const data=JSON.parse(raw);
   return data.content?.find(b=>b.type==="text")?.text||"[No summary]";
 }
 
-// build summaries for all report types across specified years
-async function buildSummaries(center, sortedYears, latestYear, onlyYear=null){
+async function buildSummaries(center,sortedYears,latestYear,onlyYear=null){
   const summaries=[];
-  for(const {year,data} of sortedYears){
-    if(onlyYear && year!==onlyYear) continue;
+  for(const{year,data}of sortedYears){
+    if(onlyYear&&year!==onlyYear)continue;
     for(const rt of REPORT_TYPES){
       const entries=(data.reports[rt.key]||[]).filter(e=>e.raw?.trim());
-      if(!entries.length) continue;
-      const summary=await summarizeReportType(center, year, rt.label, entries);
-      if(summary) summaries.push(`=== [${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label} (${entries.length} entr${entries.length===1?"y":"ies"}) ===\n${summary}`);
+      if(!entries.length)continue;
+      const summary=await summarizeReportType(center,year,rt.label,entries);
+      if(summary)summaries.push(`=== [${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label} (${entries.length} entr${entries.length===1?"y":"ies"}) ===\n${summary}`);
     }
   }
   return summaries.join("\n\n");
 }
+
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
   const sections=[];
   sortedYears.forEach(({year,data})=>{
@@ -213,6 +266,7 @@ Respond ONLY with valid JSON (no markdown fences):
 {"currentYear":{"year":"${latestYear}","score":<1-100>,"summary":"2-3 sentences on this year only","strengthThemes":[{"theme":"...","detail":"...","sources":["qa","cd",...],"classrooms":[]}],"improvementThemes":[{"theme":"...","detail":"...","severity":"low|medium|high","sources":[],"classrooms":[],"isNew":true}],"classroomSpotlights":[{"classroom":"...","status":"needs_attention|performing_well","highlights":["..."],"sources":[]}],"inconsistencies":[{"issue":"...","detail":"...","flaggedIn":[],"notFlaggedIn":[],"riskLevel":"low|medium|high"}],"accreditationRisks":[{"risk":"...","standard":"...","severity":"low|medium|high"}],"recommendedActions":[{"action":"...","priority":"immediate|short_term|long_term","owner":"CD|ED|Director|Staff|All","linkedTheme":"..."}]},"multiYearTrends":{"overallTrend":"improving|stable|declining|mixed","yearlyScores":[{"year":"...","score":<1-100>,"headline":"≤8 word note"}],"persistentStrengths":[{"theme":"...","detail":"...","yearsPresent":[]}],"persistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","yearsPresent":[],"currentTrend":"improving|stable|declining|mixed"}],"resolvedConcerns":[{"theme":"...","detail":"...","resolvedIn":"..."}],"emergingStrengths":[{"theme":"...","detail":"...","emergedIn":"..."}],"classroomPatterns":[{"classroom":"...","pattern":"...","trend":"improving|stable|declining|mixed","yearsTracked":[]}],"inconsistencyPattern":"1-2 sentences","accreditationTrajectory":"2-3 sentences"},"systemsLevelTags":["max 8 short tags"]}`;
   return callClaude(prompt);
 }
+
 async function analyzeSystemsMultiYear(centersData){
   const summaries=Object.entries(centersData).filter(([,v])=>v.analysis).map(([name,v])=>{
     const a=v.analysis;
@@ -339,6 +393,130 @@ function ApiKeyPanel({apiKey,onSave}){
       </div>
       <button onClick={()=>val.trim()&&onSave(val.trim())} disabled={!val.trim()} style={{padding:"8px 16px",borderRadius:8,border:"none",background:val.trim()?"#7c3aed":"#e5e7eb",color:val.trim()?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:val.trim()?"pointer":"not-allowed",whiteSpace:"nowrap"}}>Save Key</button>
       {apiKey&&<button onClick={()=>{setVal("");onSave("");}} style={{padding:"8px 12px",borderRadius:8,border:"1px solid #fca5a5",background:"none",color:"#ef4444",fontSize:11,cursor:"pointer"}}>Clear</button>}
+    </div>
+  </div>);
+}
+
+// ── QA PDF Import Modal ────────────────────────────────────────────────────
+function QAPdfImportModal({onImport,onClose}){
+  const[file,setFile]=useState(null);
+  const[parsing,setParsing]=useState(false);
+  const[preview,setPreview]=useState(null);
+  const[err,setErr]=useState("");
+  const fileRef=useRef();
+
+  const handleFile=e=>{
+    const f=e.target.files[0];
+    if(!f)return;
+    if(f.type!=="application/pdf"){setErr("Please select a PDF file.");return;}
+    setFile(f);setPreview(null);setErr("");
+  };
+
+  const handleDrop=e=>{
+    e.preventDefault();
+    const f=e.dataTransfer.files[0];
+    if(!f||f.type!=="application/pdf"){setErr("Please drop a PDF file.");return;}
+    setFile(f);setPreview(null);setErr("");
+  };
+
+  const doParse=async()=>{
+    if(!file)return;
+    setParsing(true);setErr("");setPreview(null);
+    try{
+      const qaData=await parseQAPdf(file);
+      setPreview(qaData);
+    }catch(e){setErr(`Parse failed: ${e.message}`);}
+    finally{setParsing(false);}
+  };
+
+  const doImport=()=>{
+    if(!preview)return;
+    const text=formatQADataAsText(preview);
+    const visitLabel=`QA Visit — ${preview.visit.date}`;
+    // one entry per QA visit, storing both the raw text and the structured qaData
+    onImport([{
+      id:uid(),
+      title:visitLabel,
+      raw:text,
+      source:"qa_pdf",
+      qaData:preview,
+    }]);
+  };
+
+  const{overall,classrooms,visit}=preview||{};
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:"#fff",borderRadius:16,padding:22,width:600,maxWidth:"95vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+        <span style={{fontSize:22}}>📋</span>
+        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import QA Visit from PDF</div><div style={{fontSize:11,color:"#9ca3af"}}>Claude will extract all scores, missed items, and patterns automatically</div></div>
+        <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
+      </div>
+
+      {/* Drop zone */}
+      {!preview&&(<div
+        onDrop={handleDrop}
+        onDragOver={e=>e.preventDefault()}
+        onClick={()=>fileRef.current.click()}
+        style={{border:`2px dashed ${file?"#7c3aed":"#d1d5db"}`,borderRadius:12,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:file?"#faf5ff":"#fafafa",marginBottom:12,transition:"all 0.15s"}}>
+        <input ref={fileRef} type="file" accept="application/pdf" onChange={handleFile} style={{display:"none"}}/>
+        <div style={{fontSize:28,marginBottom:8}}>{file?"📋":"📁"}</div>
+        {file
+          ?<div><div style={{fontSize:13,fontWeight:700,color:"#4c1d95"}}>{file.name}</div><div style={{fontSize:11,color:"#9ca3af",marginTop:2}}>{(file.size/1024).toFixed(0)} KB — ready to parse</div></div>
+          :<div><div style={{fontSize:13,fontWeight:600,color:"#6b7280"}}>Drop a QA PDF here or click to browse</div><div style={{fontSize:11,color:"#9ca3af",marginTop:3}}>Works with both 2024–25 and 2025–26 QA formats</div></div>
+        }
+      </div>)}
+
+      {err&&<div style={{marginBottom:10,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"8px 12px"}}>{err}</div>}
+
+      {/* Parse button */}
+      {file&&!preview&&(
+        <button onClick={doParse} disabled={parsing} style={{width:"100%",padding:"10px",borderRadius:9,border:"none",background:parsing?"#e5e7eb":"#7c3aed",color:parsing?"#9ca3af":"#fff",fontSize:12,fontWeight:700,cursor:parsing?"not-allowed":"pointer",marginBottom:10}}>
+          {parsing?"🔄 Claude is reading the PDF…":"🔍 Extract QA Data"}
+        </button>
+      )}
+
+      {/* Preview */}
+      {preview&&visit&&(<>
+        <div style={{background:"#f0fdf4",border:"1px solid #a7f3d0",borderRadius:10,padding:"10px 14px",marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,fontWeight:800,color:"#065f46"}}>✓ Extracted successfully</span>
+            <span style={{fontSize:11,color:"#374151"}}>Visit: {visit.date}</span>
+            <span style={{fontSize:11,color:"#374151"}}>Format: {visit.weight_format}</span>
+            {overall?.overall_score!=null&&(
+              <span style={{fontSize:12,fontWeight:800,padding:"2px 10px",borderRadius:99,background:overall.is_passing?"#d1fae5":"#fee2e2",color:overall.is_passing?"#065f46":"#991b1b"}}>
+                {overall.overall_score}% — {overall.is_passing?"PASSING":"FAILING"}
+              </span>
+            )}
+          </div>
+          {/* Classroom score grid */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:5}}>
+            {classrooms?.map((c,i)=>{
+              const col=c.score_pct>=95?"#10b981":c.score_pct>=90?"#f59e0b":"#ef4444";
+              return(<div key={i} style={{background:"#fff",border:`1px solid ${c.is_noncompliant?"#fecaca":"#e5e7eb"}`,borderRadius:7,padding:"6px 9px"}}>
+                <div style={{fontSize:10,fontWeight:700,color:"#374151"}}>{c.name}</div>
+                <div style={{fontSize:13,fontWeight:800,color:col}}>{c.score_pct}%{c.is_noncompliant&&<span style={{fontSize:9,color:"#ef4444",marginLeft:4}}>NC</span>}</div>
+                {c.missed_items?.length>0&&<div style={{fontSize:9,color:"#9ca3af"}}>{c.missed_items.length} missed</div>}
+              </div>);
+            })}
+          </div>
+          {overall?.cross_classroom_patterns?.length>0&&(
+            <div style={{marginTop:10,padding:"8px 10px",background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:7}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#92400e",marginBottom:4}}>Cross-classroom patterns:</div>
+              {overall.cross_classroom_patterns.map((p,i)=><div key={i} style={{fontSize:11,color:"#374151"}}>• {p}</div>)}
+            </div>
+          )}
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={()=>{setPreview(null);setFile(null);}} style={{padding:"8px 14px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Try another PDF</button>
+          <button onClick={onClose} style={{padding:"8px 14px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
+          <button onClick={doImport} style={{padding:"8px 18px",border:"none",borderRadius:8,background:"#7c3aed",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Import as QA Entry</button>
+        </div>
+      </>)}
+
+      {!file&&!preview&&(<div style={{textAlign:"center",padding:"10px 0 4px",color:"#9ca3af",fontSize:11}}>
+        No Google API key needed — Claude reads the PDF directly.
+      </div>)}
     </div>
   </div>);
 }
@@ -515,10 +693,9 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
   const[open,setOpen]=useState(false);
   const[showSheet,setShowSheet]=useState(false);
   const[showDoc,setShowDoc]=useState(false);
-  const pct=Math.min(100,Math.round((entries.length/type.min)*100));
-  const barCol=entries.length>=type.min?"#10b981":entries.length>0?"#f59e0b":"#e5e7eb";
-  const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:{};
-  // group entries by sheetUrl so multi-tab imports count as 1 visit
+  const[showQAPdf,setShowQAPdf]=useState(false);
+  const isQA=type.key==="qa";
+  const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:s==="qa_pdf"?{background:"#ede9fe",color:"#5b21b6"}:{};
   const uniqueSources=new Set(entries.map(e=>e.sheetUrl||e.docUrl||e.id));
   const visitCount=uniqueSources.size;
   const visitPct=Math.min(100,Math.round((visitCount/type.min)*100));
@@ -536,7 +713,10 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
             <span style={{fontSize:9,color:"#9ca3af"}}>{visitCount}/{type.min} min</span>
           </div>
         </div>
-        <div style={{display:"flex",gap:5}}>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+          {isQA&&(
+            <button onClick={e=>{e.stopPropagation();setShowQAPdf(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"#ede9fe",color:"#5b21b6",fontSize:10,fontWeight:700,cursor:"pointer"}}>📋 PDF</button>
+          )}
           {apiKey&&(<>
             <button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>
             <button onClick={e=>{e.stopPropagation();setShowDoc(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #1d6fb8",background:"none",color:"#1d6fb8",fontSize:10,fontWeight:700,cursor:"pointer"}}>📄 Doc</button>
@@ -551,16 +731,23 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
               <span style={{fontSize:11,fontWeight:700,color:"#374151"}}>{e.title||`${type.label} #${i+1}`}</span>
-              {e.source&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:99,...srcStyle(e.source)}}>{e.source==="sheets"?"📊 Sheets":"📄 Doc"}</span>}
+              {e.source&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:99,...srcStyle(e.source)}}>
+                {e.source==="sheets"?"📊 Sheets":e.source==="docs"?"📄 Doc":e.source==="qa_pdf"?"📋 PDF":""}
+              </span>}
+              {e.qaData?.overall?.overall_score!=null&&(
+                <span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:e.qaData.overall.is_passing?"#d1fae5":"#fee2e2",color:e.qaData.overall.is_passing?"#065f46":"#991b1b"}}>
+                  {e.qaData.overall.overall_score}% {e.qaData.overall.is_passing?"✓":"✗"}
+                </span>
+              )}
             </div>
             <div style={{fontSize:10,color:"#9ca3af",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.raw?.slice(0,70)}…</div>
           </div>
-          {(e.sheetUrl||e.docUrl)&&<a href={e.sheetUrl||e.docUrl} target="_blank" rel="noreferrer" style={{fontSize:10,color:"#7c3aed",textDecoration:"none",padding:"2px 7px",border:"1px solid #c4b5fd",borderRadius:5,background:"#faf5ff",whiteSpace:"nowrap"}}>Open ↗</a>}
           <button onClick={()=>onEdit(i)} style={{padding:"2px 8px",borderRadius:5,border:"1px solid #e5e7eb",background:"#fff",fontSize:10,cursor:"pointer",color:"#6b7280"}}>Edit</button>
           <button onClick={()=>onRemove(i)} style={{padding:"2px 6px",borderRadius:5,border:"none",background:"none",fontSize:13,cursor:"pointer",color:"#fca5a5"}}>×</button>
         </div>))}
       </div>)}
     </div>
+    {showQAPdf&&<QAPdfImportModal onImport={e=>{onImport(e);setShowQAPdf(false);}} onClose={()=>setShowQAPdf(false)}/>}
     {showSheet&&<SheetImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowSheet(false);}} onClose={()=>setShowSheet(false)}/>}
     {showDoc&&<DocImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowDoc(false);}} onClose={()=>setShowDoc(false)}/>}
   </>);
@@ -660,7 +847,6 @@ function App(){
   return(<div style={{display:"flex",flexDirection:"column",height:"100vh",background:OFF_WHITE,overflow:"hidden"}}>
     {/* Header */}
     <div style={{background:IVY_NAVY,borderBottom:`2px solid ${IVY_DEEP}`,padding:"10px 20px",display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
-      {/* SVG logo crest */}
       <svg width="38" height="38" viewBox="0 0 38 38">
         <circle cx="19" cy="19" r="18" fill={IVY_NAVY} stroke="white" strokeWidth="1.5"/>
         <circle cx="19" cy="19" r="14" fill={IVY_NAVY} stroke={SKY_BLUE} strokeWidth="1"/>
