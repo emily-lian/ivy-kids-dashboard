@@ -135,6 +135,28 @@ async function callClaude(prompt){
   if(start===-1||end===-1)throw new Error(`No JSON found: ${cleaned.slice(0,300)}`);
   return JSON.parse(cleaned.slice(start,end+1));
 }
+
+// truncate a single entry's raw text to a max character length
+function truncateEntry(raw, maxChars=3000){
+  if(!raw||raw.length<=maxChars) return raw;
+  return raw.slice(0,maxChars)+"…[truncated for length]";
+}
+
+// build a compact report block from years data
+function buildReportBlock(sortedYears, latestYear, onlyYear=null){
+  const sections=[];
+  sortedYears.forEach(({year,data})=>{
+    if(onlyYear && year!==onlyYear) return;
+    REPORT_TYPES.forEach(rt=>{
+      (data.reports[rt.key]||[]).forEach((e,i)=>{
+        if(!e.raw?.trim()) return;
+        const label=`[${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label}${e.title?" — "+e.title:""} #${i+1}`;
+        sections.push(`=== ${label} ===\n${truncateEntry(e.raw)}`);
+      });
+    });
+  });
+  return sections.join("\n\n");
+}
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
   const sections=[];
   sortedYears.forEach(({year,data})=>{
