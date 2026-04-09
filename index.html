@@ -137,30 +137,44 @@ async function callClaude(prompt){
 }
 
 // truncate a single entry's raw text
-function truncateEntry(raw, maxChars=800){
+function truncateEntry(raw, maxChars=1500){
   if(!raw||raw.length<=maxChars) return raw;
   return raw.slice(0,maxChars)+"…[truncated]";
 }
 
-// build a compact report block, with a hard cap on total size
-function buildReportBlock(sortedYears, latestYear, onlyYear=null, maxTotalChars=60000){
-  const sections=[];
-  sortedYears.forEach(({year,data})=>{
-    if(onlyYear && year!==onlyYear) return;
-    REPORT_TYPES.forEach(rt=>{
-      (data.reports[rt.key]||[]).forEach((e,i)=>{
-        if(!e.raw?.trim()) return;
-        const label=`[${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label}${e.title?" — "+e.title:""} #${i+1}`;
-        sections.push(`=== ${label} ===\n${truncateEntry(e.raw)}`);
-      });
-    });
+// summarize all entries for one report type in one year
+async function summarizeReportType(center, year, reportType, entries){
+  if(!entries?.length) return null;
+  const content=entries.map((e,i)=>`--- Entry ${i+1}${e.title?" ("+e.title+")":""} ---\n${truncateEntry(e.raw,1500)}`).join("\n\n");
+  const prompt=`You are an early childhood education QA expert. Summarize the following ${reportType} data for ${center} (${year}) into a concise paragraph of 150 words or less. Focus on: overall rating/score if present, key strengths, key concerns, specific classrooms or teachers mentioned, and any notable patterns across entries. Be specific — include actual scores, names, and observations where present.
+
+${content}
+
+Respond with ONLY the summary paragraph, no JSON, no headers.`;
+  const res=await fetch(`${PROXY}/anthropic`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:300,messages:[{role:"user",content:prompt}]})
   });
-  // hard cap on total characters sent
-  let block=sections.join("\n\n");
-  if(block.length>maxTotalChars){
-    block=block.slice(0,maxTotalChars)+"\n\n…[additional entries truncated for length]";
+  const raw=await res.text();
+  if(!res.ok) return `[Summary unavailable: ${res.status}]`;
+  const data=JSON.parse(raw);
+  return data.content?.find(b=>b.type==="text")?.text||"[No summary]";
+}
+
+// build summaries for all report types across specified years
+async function buildSummaries(center, sortedYears, latestYear, onlyYear=null){
+  const summaries=[];
+  for(const {year,data} of sortedYears){
+    if(onlyYear && year!==onlyYear) continue;
+    for(const rt of REPORT_TYPES){
+      const entries=(data.reports[rt.key]||[]).filter(e=>e.raw?.trim());
+      if(!entries.length) continue;
+      const summary=await summarizeReportType(center, year, rt.label, entries);
+      if(summary) summaries.push(`=== [${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label} (${entries.length} entr${entries.length===1?"y":"ies"}) ===\n${summary}`);
+    }
   }
-  return block;
+  return summaries.join("\n\n");
 }
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
   const sections=[];
