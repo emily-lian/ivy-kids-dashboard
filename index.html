@@ -136,14 +136,14 @@ async function callClaude(prompt){
   return JSON.parse(cleaned.slice(start,end+1));
 }
 
-// truncate a single entry's raw text to a max character length
-function truncateEntry(raw, maxChars=3000){
+// truncate a single entry's raw text
+function truncateEntry(raw, maxChars=800){
   if(!raw||raw.length<=maxChars) return raw;
-  return raw.slice(0,maxChars)+"…[truncated for length]";
+  return raw.slice(0,maxChars)+"…[truncated]";
 }
 
-// build a compact report block from years data
-function buildReportBlock(sortedYears, latestYear, onlyYear=null){
+// build a compact report block, with a hard cap on total size
+function buildReportBlock(sortedYears, latestYear, onlyYear=null, maxTotalChars=60000){
   const sections=[];
   sortedYears.forEach(({year,data})=>{
     if(onlyYear && year!==onlyYear) return;
@@ -155,7 +155,12 @@ function buildReportBlock(sortedYears, latestYear, onlyYear=null){
       });
     });
   });
-  return sections.join("\n\n");
+  // hard cap on total characters sent
+  let block=sections.join("\n\n");
+  if(block.length>maxTotalChars){
+    block=block.slice(0,maxTotalChars)+"\n\n…[additional entries truncated for length]";
+  }
+  return block;
 }
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
   const sections=[];
