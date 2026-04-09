@@ -369,15 +369,12 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
     if(!chosen.length)return;
     setImporting(true);setErr("");
     try{
-      const parts=[];
+      const entries=[];
       for(const tab of chosen){
         const raw=await fetchTabData(sheetId,tab.title,apiKey);
-        parts.push(`--- Tab: ${tab.title} ---\n${raw}`);
+        entries.push({id:uid(),title:customTitle.trim()?`${customTitle} — ${tab.title}`:tab.title,raw,source:"sheets",sheetUrl:url});
       }
-      const merged=parts.join("\n\n");
-      const sheetName=url.match(/\/spreadsheets\/d\/[^/]+\/.*?#gid=/)
-        ?url:url; // fallback to url; title set by user
-      onImport([{id:uid(),title:customTitle.trim()||`Import (${chosen.length} tab${chosen.length!==1?"s":""})`,raw:merged,source:"sheets",sheetUrl:url}]);
+      onImport(entries);
     }catch(e){setErr(`Import failed: ${e.message}`);}
     finally{setImporting(false);}
   };
@@ -422,7 +419,7 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
           </div>
         </div>
         {selCount>0&&<div style={{background:"#f0fdf4",border:"1px solid #a7f3d0",borderRadius:8,padding:"7px 11px",fontSize:11,color:"#065f46",marginBottom:12}}>
-          ✓ {selCount} tab{selCount!==1?"s":""} will be merged into 1 entry — counts as 1 visit.
+          ✓ {selCount} tab{selCount!==1?"s":""} will be imported as {selCount} separate entries — counts as 1 visit toward your minimum.
         </div>}
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
@@ -521,6 +518,11 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
   const pct=Math.min(100,Math.round((entries.length/type.min)*100));
   const barCol=entries.length>=type.min?"#10b981":entries.length>0?"#f59e0b":"#e5e7eb";
   const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:{};
+  // group entries by sheetUrl so multi-tab imports count as 1 visit
+  const uniqueSources=new Set(entries.map(e=>e.sheetUrl||e.docUrl||e.id));
+  const visitCount=uniqueSources.size;
+  const visitPct=Math.min(100,Math.round((visitCount/type.min)*100));
+  const visitBarCol=visitCount>=type.min?"#10b981":visitCount>0?"#f59e0b":"#e5e7eb";
   return(<>
     <div style={{border:"1px solid",borderColor:entries.length?"#d1fae5":"#ebebeb",borderRadius:9,background:entries.length?"#f9fffe":"#fafafa",marginBottom:4}}>
       <button style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"8px 11px",border:"none",background:"none",cursor:"pointer",textAlign:"left"}} onClick={()=>setOpen(o=>!o)}>
@@ -529,9 +531,9 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
           <div style={{fontWeight:700,fontSize:12,color:"#1f2937"}}>{type.label}</div>
           <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
             <div style={{height:3,width:72,background:"#e5e7eb",borderRadius:2,overflow:"hidden"}}>
-              <div style={{height:"100%",width:pct+"%",background:barCol,borderRadius:2}}/>
+              <div style={{height:"100%",width:visitPct+"%",background:visitBarCol,borderRadius:2}}/>
             </div>
-            <span style={{fontSize:9,color:"#9ca3af"}}>{entries.length}/{type.min} min</span>
+            <span style={{fontSize:9,color:"#9ca3af"}}>{visitCount}/{type.min} min</span>
           </div>
         </div>
         <div style={{display:"flex",gap:5}}>
