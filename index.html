@@ -25,12 +25,13 @@ const{useState,useCallback,useMemo,useEffect,useRef}=React;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const REPORT_TYPES=[
-  {key:"qa",label:"QA Visit",icon:"🔍",min:2},
-  {key:"cd",label:"CD Observation",icon:"👤",min:1},
-  {key:"ed",label:"ED Observation",icon:"🎓",min:1},
-  {key:"curriculum",label:"Curriculum Visit",icon:"📚",min:2},
-  {key:"family",label:"Family Survey",icon:"👨‍👩‍👧",min:2},
-  {key:"teacher",label:"Teacher Survey",icon:"✏️",min:1},
+  {key:"qa",label:"QA Visit",icon:"🔍",min:2,buttons:["pdf","sheet"]},
+  {key:"cd",label:"CD Observation",icon:"👤",min:1,buttons:["pdf","sheet"]},
+  {key:"ed",label:"ED Observation",icon:"🎓",min:1,buttons:["pdf","sheet"]},
+  {key:"curriculum",label:"Curriculum Visit",icon:"📚",min:2,buttons:["paste"]},
+  {key:"family",label:"Family Survey",icon:"👨‍👩‍👧",min:2,buttons:["sheet"]},
+  {key:"teacher",label:"Teacher Survey",icon:"✏️",min:1,buttons:["sheet"]},
+  {key:"assessment",label:"Student Assessment",icon:"📝",min:1,buttons:["sheet","paste"]},
 ];
 const INITIAL_CENTERS=["Ivy Kids of Honolulu","Ivy Kids of Windsor","Ivy Kids of Paris"];
 
@@ -584,11 +585,9 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
   const[open,setOpen]=useState(false);
   const[showSheet,setShowSheet]=useState(false);
   const[showQAPdf,setShowQAPdf]=useState(false);
-  const isPdfType=type.key==="qa"||type.key==="cd"||type.key==="ed";
-  const isSheetOnly=type.key==="teacher";
-  const isPasteOnly=type.key==="curriculum";
-  const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:s==="qa_pdf"?{background:"#ede9fe",color:"#5b21b6"}:{};
-  const uniqueSources=new Set(entries.map(e=>e.sheetUrl||e.docUrl||e.id));
+  const btns=type.buttons||[];
+  const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="qa_pdf"?{background:"#ede9fe",color:"#5b21b6"}:{};
+  const uniqueSources=new Set(entries.map(e=>e.sheetUrl||e.id));
   const visitCount=uniqueSources.size;
   const visitPct=Math.min(100,Math.round((visitCount/type.min)*100));
   const visitBarCol=visitCount>=type.min?"#10b981":visitCount>0?"#f59e0b":"#e5e7eb";
@@ -606,10 +605,9 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
           </div>
         </div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {isPdfType&&<button onClick={e=>{e.stopPropagation();setShowQAPdf(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"#ede9fe",color:"#5b21b6",fontSize:10,fontWeight:700,cursor:"pointer"}}>📋 PDF</button>}
-          {isSheetOnly&&apiKey&&<button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>}
-          {!isPdfType&&!isSheetOnly&&<button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>}
-          {type.key==="family"&&<button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>}
+          {btns.includes("pdf")&&<button onClick={e=>{e.stopPropagation();setShowQAPdf(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"#ede9fe",color:"#5b21b6",fontSize:10,fontWeight:700,cursor:"pointer"}}>📋 PDF</button>}
+          {btns.includes("sheet")&&apiKey&&<button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>}
+          {btns.includes("paste")&&<button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>}
         </div>
         <span style={{color:"#d1d5db",fontSize:10,marginLeft:3}}>{open?"▲":"▼"}</span>
       </button>
