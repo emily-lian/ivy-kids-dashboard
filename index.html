@@ -26,8 +26,8 @@ const{useState,useCallback,useMemo,useEffect,useRef}=React;
 // ── Constants ──────────────────────────────────────────────────────────────
 const REPORT_TYPES=[
   {key:"qa",label:"QA Visit",icon:"🔍",min:2},
-  {key:"cd",label:"CD Observation",icon:"👤",min:4},
-  {key:"ed",label:"ED Observation",icon:"🎓",min:5},
+  {key:"cd",label:"CD Observation",icon:"👤",min:1},
+  {key:"ed",label:"ED Observation",icon:"🎓",min:1},
   {key:"curriculum",label:"Curriculum Visit",icon:"📚",min:2},
   {key:"family",label:"Family Survey",icon:"👨‍👩‍👧",min:2},
   {key:"teacher",label:"Teacher Survey",icon:"✏️",min:1},
@@ -42,13 +42,30 @@ const SKY_BLUE  = "#C9E2FF";
 const CITRON    = "#D1C360";
 const OLIVE     = "#807522";
 const OFF_WHITE = "#FFFCF3";
-const PEARL     = "#E8E0CC";
+
 const curYear=new Date().getFullYear();
 const SCHOOL_YEARS=Array.from({length:8},(_,i)=>{const y=curYear-i;return`${y}–${String(y+1).slice(2)}`;});
 const PRIORITY_COLOR={immediate:"#ef4444",short_term:"#f59e0b",long_term:"#3b82f6"};
 const SEVERITY_COLOR={high:"#ef4444",medium:"#f59e0b",low:"#3b82f6"};
 const TREND_META={improving:{icon:"↗",color:"#10b981"},stable:{icon:"→",color:"#6b7280"},declining:{icon:"↘",color:"#ef4444"},mixed:{icon:"↕",color:"#f59e0b"},insufficient_data:{icon:"?",color:"#9ca3af"}};
 const STATUS_MAP={high_performing:{bg:"#d1fae5",color:"#065f46",label:"High performing"},on_track:{bg:"#dbeafe",color:"#1e40af",label:"On track"},needs_support:{bg:"#fef3c7",color:"#92400e",label:"Needs support"},urgent:{bg:"#fee2e2",color:"#991b1b",label:"Urgent"}};
+
+// ── Cognia Framework ───────────────────────────────────────────────────────
+const COGNIA_FRAMEWORK=`Cognia Early Learning Accreditation Standards — use these to evaluate readiness:
+
+Key Characteristic #1 — Culture of Learning:
+A healthy culture is evident where stakeholders are actively engaged and supportive of the institution's mission, learners' academic and non-academic needs and interests are the focal point, and stakeholders are included and supported.
+
+Key Characteristic #2 — Leadership for Learning:
+Leadership for learning is demonstrated when school leaders communicate expectations for learning, influence and impact the culture in positive ways, and model and engage in learning while supporting others to do so.
+
+Key Characteristic #3 — Engagement of Learning:
+Engagement is demonstrated when all learners are included in the learning process, participate with confidence, and have agency over their learning.
+
+Key Characteristic #4 — Growth in Learning:
+Growth is evident when learners possess non-academic skills that ensure readiness to learn, learners' academic achievement reflects preparedness to learn, learners demonstrate growth in meeting expectations of learning as defined by the institution, and learners attain knowledge and skills necessary to achieve goals for learning.
+
+Cognia accreditation requires centers to produce narrative write-ups for: stakeholder feedback analysis, learning environment observations analysis, and a self-assessment. When identifying accreditation risks and trajectory, map findings to these four characteristics and flag which narrative write-ups will need to address each concern.`;
 
 function uid(){return Math.random().toString(36).slice(2,9);}
 function parsePaste(raw){
@@ -59,9 +76,9 @@ function parsePaste(raw){
 function extractSheetId(url){const m=url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
 function extractDocId(url){const m=url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);return m?m[1]:null;}
 
-const PROXY = "https://ivy-kids-proxy.emily-79b.workers.dev";
+const PROXY="https://ivy-kids-proxy.emily-79b.workers.dev";
 
-// ── localStorage persistence ───────────────────────────────────────────────
+// ── localStorage ───────────────────────────────────────────────────────────
 function loadState(){
   try{
     const raw=localStorage.getItem("ivykids_centers");
@@ -71,11 +88,10 @@ function loadState(){
   }catch(e){}
   return{
     centers:INITIAL_CENTERS.reduce((acc,n)=>({...acc,[n]:{years:{},analysis:null}}),{}),
-    apiKey:"",
-    sysAnalysis:null,
+    apiKey:"",sysAnalysis:null,
   };
 }
-function saveCenters(centers){try{localStorage.setItem("ivykids_centers",JSON.stringify(centers));}catch(e){}}
+function saveCenters(c){try{localStorage.setItem("ivykids_centers",JSON.stringify(c));}catch(e){}}
 function saveApiKey(k){try{if(k)localStorage.setItem("ivykids_apikey",k);else localStorage.removeItem("ivykids_apikey");}catch(e){}}
 function saveSysAnalysis(a){try{localStorage.setItem("ivykids_sysanalysis",JSON.stringify(a));}catch(e){}}
 
@@ -129,48 +145,35 @@ async function parseQAPdf(file){
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({pdfBase64:base64}),
   });
-  if(!res.ok){
-    const err=await res.text();
-    throw new Error(`QA parse failed: ${err.slice(0,200)}`);
-  }
+  if(!res.ok){const err=await res.text();throw new Error(`QA parse failed: ${err.slice(0,200)}`);}
   return res.json();
 }
-
-// format parsed QA JSON into readable text for AI analysis
 function formatQADataAsText(qaData){
   const{visit,classrooms,ed_observations,center_operations,overall}=qaData;
   const lines=[];
   lines.push(`QA Visit: ${visit.date} (${visit.school_year})`);
   lines.push(`Consultant: ${visit.consultant||"N/A"}`);
-  if(visit.center_director) lines.push(`Center Director: ${visit.center_director}`);
-  if(visit.education_director) lines.push(`Education Director: ${visit.education_director}`);
+  if(visit.center_director)lines.push(`Center Director: ${visit.center_director}`);
+  if(visit.education_director)lines.push(`Education Director: ${visit.education_director}`);
   lines.push(`Overall Score: ${overall.overall_score}% — ${overall.is_passing?"PASSING":"FAILING"}`);
   lines.push(`Classrooms Average: ${overall.classrooms_avg}%`);
-  if(overall.center_noncompliant) lines.push(`⚠ CENTER NON-COMPLIANCE: ${overall.nc_classroom_count} classroom(s) flagged`);
-  lines.push("");
-  lines.push("CLASSROOM SCORES:");
+  if(overall.center_noncompliant)lines.push(`⚠ CENTER NON-COMPLIANCE: ${overall.nc_classroom_count} classroom(s) flagged`);
+  lines.push("");lines.push("CLASSROOM SCORES:");
   classrooms.forEach(c=>{
     lines.push(`  ${c.name} (${c.teachers}): ${c.score_pct}%${c.is_noncompliant?" [NON-COMPLIANCE]":""}`);
-    if(c.missed_items?.length){
-      c.missed_items.forEach(m=>lines.push(`    MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
-    }
-    if(c.notable_positives?.length){
-      c.notable_positives.forEach(p=>lines.push(`    POSITIVE: ${p}`));
-    }
+    if(c.missed_items?.length)c.missed_items.forEach(m=>lines.push(`    MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
+    if(c.notable_positives?.length)c.notable_positives.forEach(p=>lines.push(`    POSITIVE: ${p}`));
   });
   if(ed_observations?.score_pct!=null){
-    lines.push("");
-    lines.push(`ED OBSERVATIONS & ASSESSMENTS: ${ed_observations.score_pct}%${ed_observations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
+    lines.push("");lines.push(`ED OBSERVATIONS & ASSESSMENTS: ${ed_observations.score_pct}%${ed_observations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
     ed_observations.missed_items?.forEach(m=>lines.push(`  MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
   }
   if(center_operations?.score_pct!=null){
-    lines.push("");
-    lines.push(`CENTER OPERATIONS: ${center_operations.score_pct}%${center_operations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
+    lines.push("");lines.push(`CENTER OPERATIONS: ${center_operations.score_pct}%${center_operations.is_noncompliant?" [NON-COMPLIANCE]":""}`);
     center_operations.missed_items?.forEach(m=>lines.push(`  MISSED [${m.weight}]: ${m.standard}${m.comment?" — "+m.comment:""}`));
   }
   if(overall.cross_classroom_patterns?.length){
-    lines.push("");
-    lines.push("CROSS-CLASSROOM PATTERNS:");
+    lines.push("");lines.push("CROSS-CLASSROOM PATTERNS:");
     overall.cross_classroom_patterns.forEach(p=>lines.push(`  • ${p}`));
   }
   return lines.join("\n");
@@ -178,12 +181,8 @@ function formatQADataAsText(qaData){
 
 // ── Anthropic API ──────────────────────────────────────────────────────────
 async function callClaude(prompt){
-  const chars=prompt.length;
-  const estTokens=Math.ceil(chars/4);
-  console.log(`[API call] ~${estTokens} tokens (${chars} chars)`);
-  if(estTokens>190000){
-    throw new Error(`Prompt too large: ~${estTokens} tokens. Please reduce data size.`);
-  }
+  const estTokens=Math.ceil(prompt.length/4);
+  if(estTokens>190000)throw new Error(`Prompt too large: ~${estTokens} tokens.`);
   const res=await fetch(`${PROXY}/anthropic`,{
     method:"POST",
     headers:{"Content-Type":"application/json"},
@@ -196,12 +195,10 @@ async function callClaude(prompt){
   const text=data.content?.find(b=>b.type==="text")?.text||"";
   if(!text)throw new Error(`Empty response: ${JSON.stringify(data).slice(0,300)}`);
   const cleaned=text.replace(/```json\s*/gi,"").replace(/```\s*/g,"").trim();
-  const start=cleaned.indexOf("{");
-  const end=cleaned.lastIndexOf("}");
+  const start=cleaned.indexOf("{");const end=cleaned.lastIndexOf("}");
   if(start===-1||end===-1)throw new Error(`No JSON found: ${cleaned.slice(0,300)}`);
   return JSON.parse(cleaned.slice(start,end+1));
 }
-
 function truncateEntry(raw,maxChars=300){
   if(!raw||raw.length<=maxChars)return raw;
   return raw.slice(0,maxChars)+"…[truncated]";
@@ -216,7 +213,7 @@ async function summarizeReportType(center,year,reportType,entries){
   }).join("\n");
   const safeContent=content.length>4000?content.slice(0,4000)+"…[truncated]":content;
   const prompt=`Summarize this ${reportType} for ${center} (${year}) in 80 words max. Include: quality level, top strength, top concern, any classrooms mentioned.\n\n${safeContent}\n\nOnly the summary, no headers.`;
-  if(estimateTokens(prompt)>5000)return`[${reportType} ${year}: too large — key findings: see raw data]`;
+  if(estimateTokens(prompt)>5000)return`[${reportType} ${year}: too large]`;
   const res=await fetch(`${PROXY}/anthropic`,{
     method:"POST",
     headers:{"Content-Type":"application/json"},
@@ -226,20 +223,6 @@ async function summarizeReportType(center,year,reportType,entries){
   if(!res.ok)return`[${reportType} ${year}: summary unavailable]`;
   const data=JSON.parse(raw);
   return data.content?.find(b=>b.type==="text")?.text||"[No summary]";
-}
-
-async function buildSummaries(center,sortedYears,latestYear,onlyYear=null){
-  const summaries=[];
-  for(const{year,data}of sortedYears){
-    if(onlyYear&&year!==onlyYear)continue;
-    for(const rt of REPORT_TYPES){
-      const entries=(data.reports[rt.key]||[]).filter(e=>e.raw?.trim());
-      if(!entries.length)continue;
-      const summary=await summarizeReportType(center,year,rt.label,entries);
-      if(summary)summaries.push(`=== [${year}${year===latestYear?" — CURRENT YEAR":""}] ${rt.label} (${entries.length} entr${entries.length===1?"y":"ies"}) ===\n${summary}`);
-    }
-  }
-  return summaries.join("\n\n");
 }
 
 async function analyzeCenterMultiYear(center,sortedYears,latestYear){
@@ -257,26 +240,38 @@ Center: ${center}
 Years of data (oldest→newest): ${sortedYears.map(y=>y.year).join(", ")}
 Current/most recent year: ${latestYear}
 
+${COGNIA_FRAMEWORK}
+
 All reports in chronological order:
 ${sections.join("\n\n")}
 
 CRITICAL: "currentYear" fields = ONLY most recent year (${latestYear}). "multiYearTrends" = patterns across ALL years.
 
+For accreditationRisks: map each risk to the most relevant Cognia Key Characteristic (1–4) and identify which Cognia narrative write-up it affects (stakeholder feedback analysis, learning environment observations analysis, or self-assessment).
+
+For accreditationTrajectory: assess readiness across all four Cognia Key Characteristics and identify which narrative write-ups will need the most work.
+
 Respond ONLY with valid JSON (no markdown fences):
-{"currentYear":{"year":"${latestYear}","score":<1-100>,"summary":"2-3 sentences on this year only","strengthThemes":[{"theme":"...","detail":"...","sources":["qa","cd",...],"classrooms":[]}],"improvementThemes":[{"theme":"...","detail":"...","severity":"low|medium|high","sources":[],"classrooms":[],"isNew":true}],"classroomSpotlights":[{"classroom":"...","status":"needs_attention|performing_well","highlights":["..."],"sources":[]}],"inconsistencies":[{"issue":"...","detail":"...","flaggedIn":[],"notFlaggedIn":[],"riskLevel":"low|medium|high"}],"accreditationRisks":[{"risk":"...","standard":"...","severity":"low|medium|high"}],"recommendedActions":[{"action":"...","priority":"immediate|short_term|long_term","owner":"CD|ED|Director|Staff|All","linkedTheme":"..."}]},"multiYearTrends":{"overallTrend":"improving|stable|declining|mixed","yearlyScores":[{"year":"...","score":<1-100>,"headline":"≤8 word note"}],"persistentStrengths":[{"theme":"...","detail":"...","yearsPresent":[]}],"persistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","yearsPresent":[],"currentTrend":"improving|stable|declining|mixed"}],"resolvedConcerns":[{"theme":"...","detail":"...","resolvedIn":"..."}],"emergingStrengths":[{"theme":"...","detail":"...","emergedIn":"..."}],"classroomPatterns":[{"classroom":"...","pattern":"...","trend":"improving|stable|declining|mixed","yearsTracked":[]}],"inconsistencyPattern":"1-2 sentences","accreditationTrajectory":"2-3 sentences"},"systemsLevelTags":["max 8 short tags"]}`;
+{"currentYear":{"year":"${latestYear}","score":<1-100>,"summary":"2-3 sentences on this year only","strengthThemes":[{"theme":"...","detail":"...","sources":["qa","cd",...],"classrooms":[]}],"improvementThemes":[{"theme":"...","detail":"...","severity":"low|medium|high","sources":[],"classrooms":[],"isNew":true}],"classroomSpotlights":[{"classroom":"...","status":"needs_attention|performing_well","highlights":["..."],"sources":[]}],"inconsistencies":[{"issue":"...","detail":"...","flaggedIn":[],"notFlaggedIn":[],"riskLevel":"low|medium|high"}],"accreditationRisks":[{"risk":"...","cognia_characteristic":"Culture of Learning|Leadership for Learning|Engagement of Learning|Growth in Learning","cognia_narrative":"stakeholder feedback analysis|learning environment observations analysis|self-assessment","severity":"low|medium|high"}],"recommendedActions":[{"action":"...","priority":"immediate|short_term|long_term","owner":"CD|ED|Director|Staff|All","linkedTheme":"..."}]},"multiYearTrends":{"overallTrend":"improving|stable|declining|mixed","yearlyScores":[{"year":"...","score":<1-100>,"headline":"≤8 word note"}],"persistentStrengths":[{"theme":"...","detail":"...","yearsPresent":[]}],"persistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","yearsPresent":[],"currentTrend":"improving|stable|declining|mixed"}],"resolvedConcerns":[{"theme":"...","detail":"...","resolvedIn":"..."}],"emergingStrengths":[{"theme":"...","detail":"...","emergedIn":"..."}],"classroomPatterns":[{"classroom":"...","pattern":"...","trend":"improving|stable|declining|mixed","yearsTracked":[]}],"inconsistencyPattern":"1-2 sentences","accreditationTrajectory":"2-3 sentences covering readiness across all 4 Cognia Key Characteristics and which narrative write-ups need most work"},"systemsLevelTags":["max 8 short tags"]}`;
   return callClaude(prompt);
 }
 
 async function analyzeSystemsMultiYear(centersData){
   const summaries=Object.entries(centersData).filter(([,v])=>v.analysis).map(([name,v])=>{
     const a=v.analysis;
-    return`CENTER: ${name}\nCurrent score: ${a.currentYear?.score||"?"} | Trend: ${a.multiYearTrends?.overallTrend||"?"}\nScores: ${a.multiYearTrends?.yearlyScores?.map(y=>`${y.year}:${y.score}`).join(", ")||""}\nStrengths: ${a.currentYear?.strengthThemes?.map(t=>t.theme).join("; ")||"none"}\nConcerns: ${a.currentYear?.improvementThemes?.map(t=>`${t.theme}(${t.severity}${t.isNew?",NEW":""})`).join("; ")||"none"}\nPersistent concerns: ${a.multiYearTrends?.persistentConcerns?.map(t=>`${t.theme}(${t.currentTrend})`).join("; ")||"none"}\nTags: ${a.systemsLevelTags?.join(", ")||""}`;
+    return`CENTER: ${name}\nCurrent score: ${a.currentYear?.score||"?"} | Trend: ${a.multiYearTrends?.overallTrend||"?"}\nScores: ${a.multiYearTrends?.yearlyScores?.map(y=>`${y.year}:${y.score}`).join(", ")||""}\nStrengths: ${a.currentYear?.strengthThemes?.map(t=>t.theme).join("; ")||"none"}\nConcerns: ${a.currentYear?.improvementThemes?.map(t=>`${t.theme}(${t.severity}${t.isNew?",NEW":""})`).join("; ")||"none"}\nPersistent concerns: ${a.multiYearTrends?.persistentConcerns?.map(t=>`${t.theme}(${t.currentTrend})`).join("; ")||"none"}\nAccreditation risks: ${a.currentYear?.accreditationRisks?.map(r=>`${r.risk} [${r.cognia_characteristic}]`).join("; ")||"none"}\nTags: ${a.systemsLevelTags?.join(", ")||""}`;
   });
   if(summaries.length<2)return null;
   const prompt=`You are an early childhood education systems director analyzing quality data across ${summaries.length} centers for Cognia accreditation.
+
+${COGNIA_FRAMEWORK}
+
 ${summaries.join("\n\n---\n\n")}
+
+For accreditationOutlook: assess system-wide readiness across all four Cognia Key Characteristics. Identify which characteristics are strongest and weakest across the system, and which Cognia narrative write-ups will require the most attention.
+
 Respond ONLY with valid JSON (no markdown fences):
-{"overview":"4-5 sentences","systemScore":<1-100>,"systemTrend":"improving|stable|declining|mixed","centerRankings":[{"center":"...","currentScore":<1-100>,"trend":"improving|stable|declining|mixed","status":"high_performing|on_track|needs_support|urgent"}],"systemicPersistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[],"trend":"improving|stable|declining|mixed"}],"systemicCurrentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"systemWideStrengths":[{"theme":"...","detail":"...","centersAffected":[]}],"isolatedConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"inconsistencyPattern":"paragraph","accreditationOutlook":"paragraph","priorityActions":[{"action":"...","scope":"all_centers|specific_centers","centers":[],"priority":"immediate|short_term|long_term"}]}`;
+{"overview":"4-5 sentences","systemScore":<1-100>,"systemTrend":"improving|stable|declining|mixed","centerRankings":[{"center":"...","currentScore":<1-100>,"trend":"improving|stable|declining|mixed","status":"high_performing|on_track|needs_support|urgent"}],"systemicPersistentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[],"trend":"improving|stable|declining|mixed"}],"systemicCurrentConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"systemWideStrengths":[{"theme":"...","detail":"...","centersAffected":[]}],"isolatedConcerns":[{"theme":"...","detail":"...","severity":"low|medium|high","centersAffected":[]}],"inconsistencyPattern":"paragraph","accreditationOutlook":{"summary":"paragraph","characteristicReadiness":[{"characteristic":"Culture of Learning|Leadership for Learning|Engagement of Learning|Growth in Learning","readiness":"strong|developing|needs_work","detail":"1-2 sentences","narrativeWriteup":"stakeholder feedback analysis|learning environment observations analysis|self-assessment"}],"priorityNarratives":["ordered list of which narrative write-ups need most attention"]},"priorityActions":[{"action":"...","scope":"all_centers|specific_centers","centers":[],"priority":"immediate|short_term|long_term"}]}`;
   return callClaude(prompt);
 }
 
@@ -328,7 +323,6 @@ function ThemeBlock({item,type}){
       {!isS&&sev&&<span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:bc+"22",color:bc}}>{sev}</span>}
       {item.isNew&&<span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:99,background:"#ede9fe",color:"#7c3aed"}}>new this year</span>}
       {item.currentTrend&&<TrendBadge trend={item.currentTrend}/>}
-      {item.standard&&<span style={{fontSize:9,color:"#9ca3af"}}>Cognia: {item.standard}</span>}
     </div>
     <p style={{fontSize:11,color:"#4b5563",margin:"0 0 5px",lineHeight:1.5}}>{item.detail}</p>
     {item.yearsPresent?.length>0&&<div style={{fontSize:9,color:"#7c3aed",marginBottom:4}}>📅 {item.yearsPresent.join(", ")}</div>}
@@ -357,6 +351,47 @@ function InconsistencyBlock({item}){
   </div>);
 }
 
+// ── Cognia Risk Block ──────────────────────────────────────────────────────
+const CHAR_COLOR={"Culture of Learning":"#7c3aed","Leadership for Learning":"#0C2754","Engagement of Learning":"#059669","Growth in Learning":"#d97706"};
+const NARRATIVE_ICON={"stakeholder feedback analysis":"👥","learning environment observations analysis":"🏫","self-assessment":"📋"};
+function AccreditationRiskBlock({item}){
+  const sc=SEVERITY_COLOR[item.severity]||"#f59e0b";
+  const cc=CHAR_COLOR[item.cognia_characteristic]||IVY_NAVY;
+  return(<div style={{borderLeft:`3px solid ${sc}`,padding:"7px 7px 7px 11px",background:sc+"0d",borderRadius:"0 8px 8px 0",marginBottom:6}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+      <span style={{fontSize:12,fontWeight:700,color:"#1f2937"}}>{item.risk}</span>
+      <span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:sc+"22",color:sc}}>{item.severity}</span>
+    </div>
+    <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+      {item.cognia_characteristic&&(
+        <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:99,background:cc+"15",color:cc,border:`1px solid ${cc}30`}}>
+          🎓 {item.cognia_characteristic}
+        </span>
+      )}
+      {item.cognia_narrative&&(
+        <span style={{fontSize:9,fontWeight:600,padding:"2px 8px",borderRadius:99,background:"#f3f4f6",color:"#374151"}}>
+          {NARRATIVE_ICON[item.cognia_narrative]||"📄"} {item.cognia_narrative}
+        </span>
+      )}
+    </div>
+  </div>);
+}
+
+// ── Cognia Characteristic Readiness (systems view) ─────────────────────────
+const READINESS_META={strong:{color:"#10b981",bg:"#f0fdf4",label:"Strong"},developing:{color:"#f59e0b",bg:"#fffbeb",label:"Developing"},needs_work:{color:"#ef4444",bg:"#fff5f5",label:"Needs Work"}};
+function CharacteristicCard({item}){
+  const rm=READINESS_META[item.readiness]||READINESS_META.developing;
+  const cc=CHAR_COLOR[item.characteristic]||IVY_NAVY;
+  return(<div style={{border:`1px solid ${cc}30`,borderRadius:10,padding:"10px 12px",background:"#fff",marginBottom:6}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
+      <span style={{fontSize:11,fontWeight:800,color:cc}}>{item.characteristic}</span>
+      <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:99,background:rm.bg,color:rm.color}}>{rm.label}</span>
+      {item.narrativeWriteup&&<span style={{fontSize:9,color:"#6b7280"}}>{NARRATIVE_ICON[item.narrativeWriteup]||"📄"} {item.narrativeWriteup}</span>}
+    </div>
+    <p style={{fontSize:11,color:"#4b5563",margin:0,lineHeight:1.5}}>{item.detail}</p>
+  </div>);
+}
+
 // ── API Key Panel ──────────────────────────────────────────────────────────
 function ApiKeyPanel({apiKey,onSave}){
   const[val,setVal]=useState(apiKey||"");
@@ -367,23 +402,18 @@ function ApiKeyPanel({apiKey,onSave}){
       <span style={{fontSize:20}}>🔑</span>
       <div>
         <div style={{fontSize:13,fontWeight:800,color:"#1f2937"}}>Google Sheets & Docs API Key</div>
-        <div style={{fontSize:11,color:apiKey?"#10b981":"#f59e0b",fontWeight:600}}>{apiKey?"✓ Connected — paste Sheet or Doc URLs to import":"Not set — required to import from Google"}</div>
+        <div style={{fontSize:11,color:apiKey?"#10b981":"#f59e0b",fontWeight:600}}>{apiKey?"✓ Connected":"Not set — required to import from Google"}</div>
       </div>
       <button onClick={()=>setStep(s=>!s)} style={{marginLeft:"auto",fontSize:11,color:"#7c3aed",background:"#ede9fe",border:"none",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontWeight:700}}>{step?"Hide setup":"How to get a key"}</button>
     </div>
     {step&&(<div style={{background:"#faf5ff",borderRadius:10,padding:14,marginBottom:12,fontSize:11,color:"#374151",lineHeight:1.7}}>
-      <div style={{fontWeight:800,color:"#4c1d95",marginBottom:6}}>One-time setup — about 3 minutes:</div>
+      <div style={{fontWeight:800,color:"#4c1d95",marginBottom:6}}>One-time setup:</div>
       <ol style={{paddingLeft:18,display:"flex",flexDirection:"column",gap:4}}>
         <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noreferrer" style={{color:"#7c3aed"}}>console.cloud.google.com</a> and sign in.</li>
-        <li>Click <b>Select a project</b> → <b>New Project</b> → name it "Ivy Kids Dashboard" → <b>Create</b>.</li>
-        <li>Search <b>Google Sheets API</b> → Enable. Then search <b>Google Docs API</b> → Enable.</li>
-        <li>Go to <b>APIs &amp; Services → Credentials</b> → <b>+ Create Credentials → API key</b>. Copy the key.</li>
-        <li>Click <b>Edit API key</b> → restrict to <b>Google Sheets API</b> and <b>Google Docs API</b> → Save.</li>
+        <li>Create a new project → enable Google Sheets API and Google Docs API.</li>
+        <li>Create an API key under Credentials → restrict to Sheets and Docs APIs.</li>
         <li>Paste your key below.</li>
       </ol>
-      <div style={{marginTop:8,padding:"8px 10px",background:"#ede9fe",borderRadius:8,color:"#4c1d95",fontSize:10}}>
-        <b>Important:</b> Each Sheet or Doc must be shared as <b>"Anyone with the link can view"</b>.
-      </div>
     </div>)}
     <div style={{display:"flex",gap:8,alignItems:"center"}}>
       <div style={{position:"relative",flex:1}}>
@@ -404,157 +434,80 @@ function QAPdfImportModal({onImport,onClose}){
   const[preview,setPreview]=useState(null);
   const[err,setErr]=useState("");
   const fileRef=useRef();
-
-  const handleFile=e=>{
-    const f=e.target.files[0];
-    if(!f)return;
-    if(f.type!=="application/pdf"){setErr("Please select a PDF file.");return;}
-    setFile(f);setPreview(null);setErr("");
-  };
-
-  const handleDrop=e=>{
-    e.preventDefault();
-    const f=e.dataTransfer.files[0];
-    if(!f||f.type!=="application/pdf"){setErr("Please drop a PDF file.");return;}
-    setFile(f);setPreview(null);setErr("");
-  };
-
+  const handleFile=e=>{const f=e.target.files[0];if(!f)return;if(f.type!=="application/pdf"){setErr("Please select a PDF file.");return;}setFile(f);setPreview(null);setErr("");};
+  const handleDrop=e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f||f.type!=="application/pdf"){setErr("Please drop a PDF file.");return;}setFile(f);setPreview(null);setErr("");};
   const doParse=async()=>{
-    if(!file)return;
-    setParsing(true);setErr("");setPreview(null);
-    try{
-      const qaData=await parseQAPdf(file);
-      setPreview(qaData);
-    }catch(e){setErr(`Parse failed: ${e.message}`);}
+    if(!file)return;setParsing(true);setErr("");setPreview(null);
+    try{const qaData=await parseQAPdf(file);setPreview(qaData);}
+    catch(e){setErr(`Parse failed: ${e.message}`);}
     finally{setParsing(false);}
   };
-
   const doImport=()=>{
     if(!preview)return;
     const text=formatQADataAsText(preview);
-    const visitLabel=`QA Visit — ${preview.visit.date}`;
-    // one entry per QA visit, storing both the raw text and the structured qaData
-    onImport([{
-      id:uid(),
-      title:visitLabel,
-      raw:text,
-      source:"qa_pdf",
-      qaData:preview,
-    }]);
+    onImport([{id:uid(),title:`QA Visit — ${preview.visit.date}`,raw:text,source:"qa_pdf",qaData:preview}]);
   };
-
   const{overall,classrooms,visit}=preview||{};
-
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:"#fff",borderRadius:16,padding:22,width:600,maxWidth:"95vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
         <span style={{fontSize:22}}>📋</span>
-        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import QA Visit from PDF</div><div style={{fontSize:11,color:"#9ca3af"}}>Claude will extract all scores, missed items, and patterns automatically</div></div>
+        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import QA Visit from PDF</div><div style={{fontSize:11,color:"#9ca3af"}}>Claude extracts scores, missed items, and patterns automatically</div></div>
         <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
       </div>
-
-      {/* Drop zone */}
-      {!preview&&(<div
-        onDrop={handleDrop}
-        onDragOver={e=>e.preventDefault()}
-        onClick={()=>fileRef.current.click()}
-        style={{border:`2px dashed ${file?"#7c3aed":"#d1d5db"}`,borderRadius:12,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:file?"#faf5ff":"#fafafa",marginBottom:12,transition:"all 0.15s"}}>
+      {!preview&&(<div onDrop={handleDrop} onDragOver={e=>e.preventDefault()} onClick={()=>fileRef.current.click()}
+        style={{border:`2px dashed ${file?"#7c3aed":"#d1d5db"}`,borderRadius:12,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:file?"#faf5ff":"#fafafa",marginBottom:12}}>
         <input ref={fileRef} type="file" accept="application/pdf" onChange={handleFile} style={{display:"none"}}/>
         <div style={{fontSize:28,marginBottom:8}}>{file?"📋":"📁"}</div>
-        {file
-          ?<div><div style={{fontSize:13,fontWeight:700,color:"#4c1d95"}}>{file.name}</div><div style={{fontSize:11,color:"#9ca3af",marginTop:2}}>{(file.size/1024).toFixed(0)} KB — ready to parse</div></div>
-          :<div><div style={{fontSize:13,fontWeight:600,color:"#6b7280"}}>Drop a QA PDF here or click to browse</div><div style={{fontSize:11,color:"#9ca3af",marginTop:3}}>Works with both 2024–25 and 2025–26 QA formats</div></div>
-        }
+        {file?<div><div style={{fontSize:13,fontWeight:700,color:"#4c1d95"}}>{file.name}</div><div style={{fontSize:11,color:"#9ca3af",marginTop:2}}>{(file.size/1024).toFixed(0)} KB</div></div>
+          :<div><div style={{fontSize:13,fontWeight:600,color:"#6b7280"}}>Drop a QA PDF here or click to browse</div><div style={{fontSize:11,color:"#9ca3af",marginTop:3}}>Works with 2024–25 and 2025–26 formats</div></div>}
       </div>)}
-
       {err&&<div style={{marginBottom:10,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"8px 12px"}}>{err}</div>}
-
-      {/* Parse button */}
-      {file&&!preview&&(
-        <button onClick={doParse} disabled={parsing} style={{width:"100%",padding:"10px",borderRadius:9,border:"none",background:parsing?"#e5e7eb":"#7c3aed",color:parsing?"#9ca3af":"#fff",fontSize:12,fontWeight:700,cursor:parsing?"not-allowed":"pointer",marginBottom:10}}>
-          {parsing?"🔄 Claude is reading the PDF…":"🔍 Extract QA Data"}
-        </button>
-      )}
-
-      {/* Preview */}
+      {file&&!preview&&(<button onClick={doParse} disabled={parsing} style={{width:"100%",padding:"10px",borderRadius:9,border:"none",background:parsing?"#e5e7eb":"#7c3aed",color:parsing?"#9ca3af":"#fff",fontSize:12,fontWeight:700,cursor:parsing?"not-allowed":"pointer",marginBottom:10}}>
+        {parsing?"🔄 Claude is reading the PDF…":"🔍 Extract QA Data"}
+      </button>)}
       {preview&&visit&&(<>
         <div style={{background:"#f0fdf4",border:"1px solid #a7f3d0",borderRadius:10,padding:"10px 14px",marginBottom:12}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}>
             <span style={{fontSize:12,fontWeight:800,color:"#065f46"}}>✓ Extracted successfully</span>
-            <span style={{fontSize:11,color:"#374151"}}>Visit: {visit.date}</span>
-            <span style={{fontSize:11,color:"#374151"}}>Format: {visit.weight_format}</span>
-            {overall?.overall_score!=null&&(
-              <span style={{fontSize:12,fontWeight:800,padding:"2px 10px",borderRadius:99,background:overall.is_passing?"#d1fae5":"#fee2e2",color:overall.is_passing?"#065f46":"#991b1b"}}>
-                {overall.overall_score}% — {overall.is_passing?"PASSING":"FAILING"}
-              </span>
-            )}
+            <span style={{fontSize:11,color:"#374151"}}>{visit.date}</span>
+            {overall?.overall_score!=null&&(<span style={{fontSize:12,fontWeight:800,padding:"2px 10px",borderRadius:99,background:overall.is_passing?"#d1fae5":"#fee2e2",color:overall.is_passing?"#065f46":"#991b1b"}}>{overall.overall_score}% — {overall.is_passing?"PASSING":"FAILING"}</span>)}
           </div>
-          {/* Classroom score grid */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:5}}>
-            {classrooms?.map((c,i)=>{
-              const col=c.score_pct>=95?"#10b981":c.score_pct>=90?"#f59e0b":"#ef4444";
-              return(<div key={i} style={{background:"#fff",border:`1px solid ${c.is_noncompliant?"#fecaca":"#e5e7eb"}`,borderRadius:7,padding:"6px 9px"}}>
-                <div style={{fontSize:10,fontWeight:700,color:"#374151"}}>{c.name}</div>
-                <div style={{fontSize:13,fontWeight:800,color:col}}>{c.score_pct}%{c.is_noncompliant&&<span style={{fontSize:9,color:"#ef4444",marginLeft:4}}>NC</span>}</div>
-                {c.missed_items?.length>0&&<div style={{fontSize:9,color:"#9ca3af"}}>{c.missed_items.length} missed</div>}
-              </div>);
-            })}
+            {classrooms?.map((c,i)=>{const col=c.score_pct>=95?"#10b981":c.score_pct>=90?"#f59e0b":"#ef4444";return(<div key={i} style={{background:"#fff",border:`1px solid ${c.is_noncompliant?"#fecaca":"#e5e7eb"}`,borderRadius:7,padding:"6px 9px"}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#374151"}}>{c.name}</div>
+              <div style={{fontSize:13,fontWeight:800,color:col}}>{c.score_pct}%{c.is_noncompliant&&<span style={{fontSize:9,color:"#ef4444",marginLeft:4}}>NC</span>}</div>
+              {c.missed_items?.length>0&&<div style={{fontSize:9,color:"#9ca3af"}}>{c.missed_items.length} missed</div>}
+            </div>);})}
           </div>
-          {overall?.cross_classroom_patterns?.length>0&&(
-            <div style={{marginTop:10,padding:"8px 10px",background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:7}}>
-              <div style={{fontSize:10,fontWeight:700,color:"#92400e",marginBottom:4}}>Cross-classroom patterns:</div>
-              {overall.cross_classroom_patterns.map((p,i)=><div key={i} style={{fontSize:11,color:"#374151"}}>• {p}</div>)}
-            </div>
-          )}
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={()=>{setPreview(null);setFile(null);}} style={{padding:"8px 14px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Try another PDF</button>
+          <button onClick={()=>{setPreview(null);setFile(null);}} style={{padding:"8px 14px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Try another</button>
           <button onClick={onClose} style={{padding:"8px 14px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
           <button onClick={doImport} style={{padding:"8px 18px",border:"none",borderRadius:8,background:"#7c3aed",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Import as QA Entry</button>
         </div>
       </>)}
-
-      {!file&&!preview&&(<div style={{textAlign:"center",padding:"10px 0 4px",color:"#9ca3af",fontSize:11}}>
-        No Google API key needed — Claude reads the PDF directly.
-      </div>)}
     </div>
   </div>);
 }
 
 // ── Sheet Import Modal ─────────────────────────────────────────────────────
 function SheetImportModal({apiKey,type,onImport,onClose}){
-  const[url,setUrl]=useState("");
-  const[tabs,setTabs]=useState(null);
-  const[selected,setSelected]=useState({});
-  const[customTitle,setCustomTitle]=useState("");
-  const[fetching,setFetching]=useState(false);
-  const[importing,setImporting]=useState(false);
-  const[err,setErr]=useState("");
+  const[url,setUrl]=useState("");const[tabs,setTabs]=useState(null);const[selected,setSelected]=useState({});
+  const[customTitle,setCustomTitle]=useState("");const[fetching,setFetching]=useState(false);
+  const[importing,setImporting]=useState(false);const[err,setErr]=useState("");
   const sheetId=useMemo(()=>extractSheetId(url),[url]);
   const loadTabs=async()=>{
     if(!sheetId){setErr("Could not find a Sheet ID in that URL.");return;}
     setFetching(true);setErr("");setTabs(null);setSelected({});
-    try{
-      const t=await fetchSheetTabs(sheetId,apiKey);
-      setTabs(t);
-      const sel={};t.forEach(tab=>{sel[tab.title]=true;});
-      setSelected(sel);
-    }catch(e){setErr(`Could not load sheet: ${e.message}`);}
-    finally{setFetching(false);}
+    try{const t=await fetchSheetTabs(sheetId,apiKey);setTabs(t);const sel={};t.forEach(tab=>{sel[tab.title]=true;});setSelected(sel);}
+    catch(e){setErr(`Could not load sheet: ${e.message}`);}finally{setFetching(false);}
   };
   const doImport=async()=>{
-    const chosen=tabs.filter(t=>selected[t.title]);
-    if(!chosen.length)return;
+    const chosen=tabs.filter(t=>selected[t.title]);if(!chosen.length)return;
     setImporting(true);setErr("");
-    try{
-      const entries=[];
-      for(const tab of chosen){
-        const raw=await fetchTabData(sheetId,tab.title,apiKey);
-        entries.push({id:uid(),title:customTitle.trim()?`${customTitle} — ${tab.title}`:tab.title,raw,source:"sheets",sheetUrl:url});
-      }
-      onImport(entries);
-    }catch(e){setErr(`Import failed: ${e.message}`);}
-    finally{setImporting(false);}
+    try{const entries=[];for(const tab of chosen){const raw=await fetchTabData(sheetId,tab.title,apiKey);entries.push({id:uid(),title:customTitle.trim()?`${customTitle} — ${tab.title}`:tab.title,raw,source:"sheets",sheetUrl:url});}onImport(entries);}
+    catch(e){setErr(`Import failed: ${e.message}`);}finally{setImporting(false);}
   };
   const selCount=Object.values(selected).filter(Boolean).length;
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
@@ -567,25 +520,19 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
       <div style={{marginBottom:12}}>
         <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Google Sheet URL</label>
         <div style={{display:"flex",gap:8}}>
-          <input value={url} onChange={e=>{setUrl(e.target.value);setTabs(null);setErr("");}} placeholder="https://docs.google.com/spreadsheets/d/…"
-            style={{flex:1,border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 11px",fontSize:12,outline:"none"}}/>
-          <button onClick={loadTabs} disabled={!sheetId||fetching} style={{padding:"8px 14px",borderRadius:8,border:"none",background:sheetId&&!fetching?"#7c3aed":"#e5e7eb",color:sheetId&&!fetching?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:sheetId&&!fetching?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
-            {fetching?"Loading…":"Load Tabs"}
-          </button>
+          <input value={url} onChange={e=>{setUrl(e.target.value);setTabs(null);setErr("");}} placeholder="https://docs.google.com/spreadsheets/d/…" style={{flex:1,border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 11px",fontSize:12,outline:"none"}}/>
+          <button onClick={loadTabs} disabled={!sheetId||fetching} style={{padding:"8px 14px",borderRadius:8,border:"none",background:sheetId&&!fetching?"#7c3aed":"#e5e7eb",color:sheetId&&!fetching?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:sheetId&&!fetching?"pointer":"not-allowed",whiteSpace:"nowrap"}}>{fetching?"Loading…":"Load Tabs"}</button>
         </div>
         {err&&<div style={{marginTop:6,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"6px 10px"}}>{err}</div>}
       </div>
       {tabs&&(<>
         <div style={{marginBottom:10}}>
           <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Entry Label</label>
-          <input value={customTitle} onChange={e=>setCustomTitle(e.target.value)}
-            placeholder={`e.g. "QA Visit — Fall 2024"`}
-            style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none"}}/>
-          <p style={{fontSize:10,color:"#9ca3af",marginTop:3}}>All selected tabs will be merged into this single entry.</p>
+          <input value={customTitle} onChange={e=>setCustomTitle(e.target.value)} placeholder={`e.g. "Fall Survey 2025"`} style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none"}}/>
         </div>
         <div style={{marginBottom:12}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-            <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs ({tabs.length}) — select all that belong to this visit</label>
+            <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs ({tabs.length})</label>
             <button onClick={()=>{const s={};tabs.forEach(t=>{s[t.title]=true;});setSelected(s);}} style={{fontSize:10,color:"#7c3aed",background:"none",border:"none",cursor:"pointer",fontWeight:700}}>All</button>
             <button onClick={()=>setSelected({})} style={{fontSize:10,color:"#9ca3af",background:"none",border:"none",cursor:"pointer"}}>None</button>
           </div>
@@ -596,67 +543,12 @@ function SheetImportModal({apiKey,type,onImport,onClose}){
             </label>))}
           </div>
         </div>
-        {selCount>0&&<div style={{background:"#f0fdf4",border:"1px solid #a7f3d0",borderRadius:8,padding:"7px 11px",fontSize:11,color:"#065f46",marginBottom:12}}>
-          ✓ {selCount} tab{selCount!==1?"s":""} will be imported as {selCount} separate entries — counts as 1 visit toward your minimum.
-        </div>}
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
-          <button onClick={doImport} disabled={importing||!selCount} style={{padding:"8px 18px",border:"none",borderRadius:8,background:selCount&&!importing?"#7c3aed":"#e5e7eb",color:selCount&&!importing?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:selCount&&!importing?"pointer":"not-allowed"}}>
-            {importing?"Importing…":"Import as 1 Entry"}
-          </button>
+          <button onClick={doImport} disabled={importing||!selCount} style={{padding:"8px 18px",border:"none",borderRadius:8,background:selCount&&!importing?"#7c3aed":"#e5e7eb",color:selCount&&!importing?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:selCount&&!importing?"pointer":"not-allowed"}}>{importing?"Importing…":"Import"}</button>
         </div>
       </>)}
       {!tabs&&!err&&<div style={{textAlign:"center",padding:"20px 0",color:"#9ca3af",fontSize:11}}>Paste a Sheet URL above and click "Load Tabs".</div>}
-    </div>
-  </div>);
-}
-
-// ── Doc Import Modal ───────────────────────────────────────────────────────
-function DocImportModal({apiKey,type,onImport,onClose}){
-  const[url,setUrl]=useState("");
-  const[preview,setPreview]=useState(null);
-  const[fetching,setFetching]=useState(false);
-  const[err,setErr]=useState("");
-  const docId=useMemo(()=>extractDocId(url),[url]);
-  const loadDoc=async()=>{
-    if(!docId){setErr("Could not find a Doc ID in that URL.");return;}
-    setFetching(true);setErr("");setPreview(null);
-    try{const r=await fetchDocContent(docId,apiKey);setPreview(r);}
-    catch(e){setErr(`Could not load document: ${e.message}`);}
-    finally{setFetching(false);}
-  };
-  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
-    <div style={{background:"#fff",borderRadius:16,padding:22,width:580,maxWidth:"95vw",maxHeight:"88vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
-        <span style={{fontSize:22}}>📄</span>
-        <div><div style={{fontWeight:800,fontSize:14,color:"#1f2937"}}>Import from Google Docs</div><div style={{fontSize:11,color:"#9ca3af"}}>{type.label}</div></div>
-        <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
-      </div>
-      <div style={{marginBottom:12}}>
-        <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Google Doc URL</label>
-        <div style={{display:"flex",gap:8}}>
-          <input value={url} onChange={e=>{setUrl(e.target.value);setPreview(null);setErr("");}} placeholder="https://docs.google.com/document/d/…"
-            style={{flex:1,border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 11px",fontSize:12,outline:"none"}}/>
-          <button onClick={loadDoc} disabled={!docId||fetching} style={{padding:"8px 14px",borderRadius:8,border:"none",background:docId&&!fetching?"#7c3aed":"#e5e7eb",color:docId&&!fetching?"#fff":"#9ca3af",fontSize:12,fontWeight:700,cursor:docId&&!fetching?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
-            {fetching?"Loading…":"Load Doc"}
-          </button>
-        </div>
-        {err&&<div style={{marginTop:6,fontSize:11,color:"#ef4444",background:"#fff5f5",border:"1px solid #fecaca",borderRadius:7,padding:"6px 10px"}}>{err}</div>}
-      </div>
-      {preview&&(<>
-        <div style={{marginBottom:10}}>
-          <div style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>Preview</div>
-          <div style={{background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:10,padding:"10px 12px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:"#1f2937",marginBottom:6}}>📄 {preview.title}</div>
-            <div style={{fontSize:11,fontFamily:"monospace",color:"#4b5563",lineHeight:1.6,maxHeight:200,overflowY:"auto",whiteSpace:"pre-wrap"}}>{preview.text.slice(0,1200)}{preview.text.length>1200?"…\n\n(preview truncated — full content will be imported)":""}</div>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={onClose} style={{padding:"8px 16px",border:"1px solid #e5e7eb",borderRadius:8,background:"#fff",fontSize:12,cursor:"pointer",color:"#6b7280"}}>Cancel</button>
-          <button onClick={()=>onImport([{id:uid(),title:preview.title,raw:preview.text,source:"docs",docUrl:url}])} style={{padding:"8px 18px",border:"none",borderRadius:8,background:"#7c3aed",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Import Document</button>
-        </div>
-      </>)}
-      {!preview&&!err&&<div style={{textAlign:"center",padding:"20px 0",color:"#9ca3af",fontSize:11}}>Paste a Doc URL above and click "Load Doc" to preview.</div>}
     </div>
   </div>);
 }
@@ -674,8 +566,7 @@ function EntryModal({type,entry,onSave,onClose}){
         <button onClick={onClose} style={{marginLeft:"auto",border:"none",background:"none",fontSize:20,cursor:"pointer",color:"#9ca3af"}}>×</button>
       </div>
       <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Entry Label (optional)</label>
-      <input value={title} onChange={e=>setTitle(e.target.value)} placeholder='e.g. "Fall Visit", "Spring Survey #2"'
-        style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none",marginBottom:12}}/>
+      <input value={title} onChange={e=>setTitle(e.target.value)} placeholder='e.g. "Fall Visit", "Spring Survey #2"' style={{width:"100%",border:"1px solid #e5e7eb",borderRadius:8,padding:"7px 11px",fontSize:12,outline:"none",marginBottom:12}}/>
       <label style={{fontSize:10,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Report Data</label>
       <p style={{fontSize:11,color:"#7c3aed",margin:"0 0 5px"}}>Paste from Google Sheets — tab-separated data is auto-formatted.</p>
       <textarea value={raw} onChange={e=>setRaw(e.target.value)} onPaste={handlePaste} placeholder="Paste or type here…"
@@ -692,9 +583,10 @@ function EntryModal({type,entry,onSave,onClose}){
 function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
   const[open,setOpen]=useState(false);
   const[showSheet,setShowSheet]=useState(false);
-  const[showDoc,setShowDoc]=useState(false);
   const[showQAPdf,setShowQAPdf]=useState(false);
-  const isQA=type.key==="qa";
+  const isPdfType=type.key==="qa"||type.key==="cd"||type.key==="ed";
+  const isSheetOnly=type.key==="teacher";
+  const isPasteOnly=type.key==="curriculum";
   const srcStyle=s=>s==="sheets"?{background:"#d1fae5",color:"#065f46"}:s==="docs"?{background:"#dbeafe",color:"#1e40af"}:s==="qa_pdf"?{background:"#ede9fe",color:"#5b21b6"}:{};
   const uniqueSources=new Set(entries.map(e=>e.sheetUrl||e.docUrl||e.id));
   const visitCount=uniqueSources.size;
@@ -714,14 +606,10 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
           </div>
         </div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {isQA&&(
-            <button onClick={e=>{e.stopPropagation();setShowQAPdf(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"#ede9fe",color:"#5b21b6",fontSize:10,fontWeight:700,cursor:"pointer"}}>📋 PDF</button>
-          )}
-          {apiKey&&(<>
-            <button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>
-            <button onClick={e=>{e.stopPropagation();setShowDoc(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #1d6fb8",background:"none",color:"#1d6fb8",fontSize:10,fontWeight:700,cursor:"pointer"}}>📄 Doc</button>
-          </>)}
-          <button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>
+          {isPdfType&&<button onClick={e=>{e.stopPropagation();setShowQAPdf(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"#ede9fe",color:"#5b21b6",fontSize:10,fontWeight:700,cursor:"pointer"}}>📋 PDF</button>}
+          {isSheetOnly&&apiKey&&<button onClick={e=>{e.stopPropagation();setShowSheet(true);}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #059669",background:"none",color:"#059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>📊 Sheet</button>}
+          {!isPdfType&&!isSheetOnly&&<button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>}
+          {type.key==="family"&&<button onClick={e=>{e.stopPropagation();onAdd();}} style={{padding:"3px 9px",borderRadius:6,border:"1.5px solid #7c3aed",background:"none",color:"#7c3aed",fontSize:10,fontWeight:700,cursor:"pointer"}}>+ Paste</button>}
         </div>
         <span style={{color:"#d1d5db",fontSize:10,marginLeft:3}}>{open?"▲":"▼"}</span>
       </button>
@@ -731,14 +619,8 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
               <span style={{fontSize:11,fontWeight:700,color:"#374151"}}>{e.title||`${type.label} #${i+1}`}</span>
-              {e.source&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:99,...srcStyle(e.source)}}>
-                {e.source==="sheets"?"📊 Sheets":e.source==="docs"?"📄 Doc":e.source==="qa_pdf"?"📋 PDF":""}
-              </span>}
-              {e.qaData?.overall?.overall_score!=null&&(
-                <span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:e.qaData.overall.is_passing?"#d1fae5":"#fee2e2",color:e.qaData.overall.is_passing?"#065f46":"#991b1b"}}>
-                  {e.qaData.overall.overall_score}% {e.qaData.overall.is_passing?"✓":"✗"}
-                </span>
-              )}
+              {e.source&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:99,...srcStyle(e.source)}}>{e.source==="sheets"?"📊 Sheets":e.source==="docs"?"📄 Doc":e.source==="qa_pdf"?"📋 PDF":""}</span>}
+              {e.qaData?.overall?.overall_score!=null&&(<span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:99,background:e.qaData.overall.is_passing?"#d1fae5":"#fee2e2",color:e.qaData.overall.is_passing?"#065f46":"#991b1b"}}>{e.qaData.overall.overall_score}% {e.qaData.overall.is_passing?"✓":"✗"}</span>)}
             </div>
             <div style={{fontSize:10,color:"#9ca3af",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.raw?.slice(0,70)}…</div>
           </div>
@@ -749,7 +631,6 @@ function ReportTypeRow({type,entries=[],apiKey,onAdd,onImport,onEdit,onRemove}){
     </div>
     {showQAPdf&&<QAPdfImportModal onImport={e=>{onImport(e);setShowQAPdf(false);}} onClose={()=>setShowQAPdf(false)}/>}
     {showSheet&&<SheetImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowSheet(false);}} onClose={()=>setShowSheet(false)}/>}
-    {showDoc&&<DocImportModal apiKey={apiKey} type={type} onImport={e=>{onImport(e);setShowDoc(false);}} onClose={()=>setShowDoc(false)}/>}
   </>);
 }
 
@@ -805,7 +686,6 @@ function App(){
 
   useEffect(()=>saveCenters(centers),[centers]);
   useEffect(()=>saveSysAnalysis(sysAnalysis),[sysAnalysis]);
-
   const handleSaveApiKey=useCallback(k=>{setApiKeyState(k);saveApiKey(k);if(k)setShowApiPanel(false);},[]);
 
   const cd=centers[active]||{years:{},analysis:null};
@@ -829,7 +709,7 @@ function App(){
     try{
       const sortedYears=[...centerYears].sort((a,b)=>a.localeCompare(b)).filter(y=>Object.values(cd.years[y].reports||{}).some(a=>a?.length)).map(y=>({year:y,data:cd.years[y]}));
       setLoadingMsg(`Summarizing ${sortedYears.length} year${sortedYears.length!==1?"s":""} of data…`);
-      const result=await analyzeCenterMultiYear(active,sortedYears,latestYear,setLoadingMsg);
+      const result=await analyzeCenterMultiYear(active,sortedYears,latestYear);
       setCenters(prev=>({...prev,[active]:{...prev[active],analysis:result}}));
       setCenterTab("analysis");
     }catch(e){alert("Analysis failed.\n"+e.message);}
@@ -841,21 +721,13 @@ function App(){
     catch(e){alert("Systems analysis failed.\n"+e.message);}
     finally{setSysLoading(false);}
   };
-
   const flagCount=name=>{const an=centers[name]?.analysis?.currentYear;if(!an)return 0;return(an.inconsistencies?.length||0)+(an.improvementThemes?.filter(t=>t.severity==="high").length||0);};
 
   return(<div style={{display:"flex",flexDirection:"column",height:"100vh",background:OFF_WHITE,overflow:"hidden"}}>
     {/* Header */}
-    <div style={{background:IVY_NAVY,borderBottom:`2px solid ${IVY_DEEP}`,padding:"10px 20px",display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
-      <svg width="38" height="38" viewBox="0 0 38 38">
-        <circle cx="19" cy="19" r="18" fill={IVY_NAVY} stroke="white" strokeWidth="1.5"/>
-        <circle cx="19" cy="19" r="14" fill={IVY_NAVY} stroke={SKY_BLUE} strokeWidth="1"/>
-        <circle cx="19" cy="19" r="10" fill={SKY_BLUE}/>
-        <text x="19" y="15" textAnchor="middle" fontSize="5" fontWeight="700" fill={IVY_NAVY} fontFamily="DM Sans,sans-serif" letterSpacing="0.5">IVY KIDS</text>
-        <text x="19" y="21" textAnchor="middle" fontSize="7" fill={IVY_NAVY}>📖</text>
-        <path d="M7 27 A13 13 0 0 0 31 27" fill="none" stroke={SKY_BLUE} strokeWidth="0.8"/>
-        <text x="19" y="28.5" textAnchor="middle" fontSize="3.2" fontWeight="600" fill="white" fontFamily="DM Sans,sans-serif" letterSpacing="1.2">EARLY LEARNING CENTER</text>
-      </svg>
+    <div style={{background:IVY_NAVY,borderBottom:`2px solid ${IVY_DEEP}`,padding:"8px 20px",display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
+      <img src="https://emily-lian.github.io/ivy-kids-dashboard/ivy-kids-logo.png" alt="Ivy Kids" style={{height:42,width:42,objectFit:"contain",borderRadius:"50%",background:"white",padding:2,flexShrink:0}}
+        onError={e=>{e.target.style.display="none";}}/>
       <div>
         <div style={{fontSize:9,fontWeight:600,letterSpacing:"0.15em",color:SKY_BLUE,textTransform:"uppercase"}}>Ivy Kids Systems</div>
         <div style={{fontSize:16,fontWeight:700,color:"white",lineHeight:1.2}}>Quality Assurance Dashboard</div>
@@ -912,7 +784,7 @@ function App(){
           {/* Systems Tab */}
           {mainTab==="systems"&&(<div>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:16,gap:12}}>
-              <div><h2 style={{fontSize:19,fontWeight:800,color:"#1f2937",margin:0}}>Systems-Level Overview</h2><p style={{fontSize:11,color:"#9ca3af",margin:"3px 0 0"}}>{analyzedCount} centers analyzed · Multi-year patterns</p></div>
+              <div><h2 style={{fontSize:19,fontWeight:800,color:"#1f2937",margin:0}}>Systems-Level Overview</h2><p style={{fontSize:11,color:"#9ca3af",margin:"3px 0 0"}}>{analyzedCount} centers analyzed · Multi-year patterns · Cognia readiness</p></div>
               <button onClick={runSystemsAnalysis} disabled={sysLoading||analyzedCount<2} style={{padding:"8px 16px",borderRadius:8,border:"none",fontSize:11,fontWeight:600,cursor:sysLoading||analyzedCount<2?"not-allowed":"pointer",background:sysLoading||analyzedCount<2?"#e5e7eb":`linear-gradient(135deg,${IVY_NAVY},${IVY_BLUE})`,color:sysLoading||analyzedCount<2?"#9ca3af":"#fff"}}>
                 {sysLoading?"🔄 Analyzing…":"🌐 Run Systems Analysis"}
               </button>
@@ -944,7 +816,17 @@ function App(){
               {sysAnalysis.systemWideStrengths?.length>0&&<SectionCard title="✅ System-Wide Strengths" accentColor="#10b981">{sysAnalysis.systemWideStrengths.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
               {sysAnalysis.isolatedConcerns?.length>0&&<SectionCard title="🟡 Isolated Concerns" subtitle="Center-specific" accentColor="#f59e0b" collapsible defaultOpen={false}>{sysAnalysis.isolatedConcerns.map((c,i)=><ThemeBlock key={i} item={c} type="concern"/>)}</SectionCard>}
               {sysAnalysis.inconsistencyPattern&&<SectionCard title="⚠️ Inconsistency Patterns" accentColor="#f59e0b"><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{sysAnalysis.inconsistencyPattern}</p></SectionCard>}
-              {sysAnalysis.accreditationOutlook&&<SectionCard title="🎓 Cognia Accreditation Outlook" accentColor="#7c3aed"><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{sysAnalysis.accreditationOutlook}</p></SectionCard>}
+              {sysAnalysis.accreditationOutlook&&(<SectionCard title="🎓 Cognia Accreditation Outlook" accentColor={IVY_NAVY}>
+                <p style={{fontSize:12,color:"#374151",lineHeight:1.65,marginBottom:12}}>{sysAnalysis.accreditationOutlook.summary}</p>
+                {sysAnalysis.accreditationOutlook.characteristicReadiness?.length>0&&(<>
+                  <div style={{fontSize:10,fontWeight:800,color:"#9ca3af",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Readiness by Key Characteristic</div>
+                  {sysAnalysis.accreditationOutlook.characteristicReadiness.map((c,i)=><CharacteristicCard key={i} item={c}/>)}
+                </>)}
+                {sysAnalysis.accreditationOutlook.priorityNarratives?.length>0&&(<div style={{marginTop:10,padding:"10px 12px",background:"#f0f4ff",borderRadius:8,border:`1px solid ${SKY_BLUE}`}}>
+                  <div style={{fontSize:10,fontWeight:800,color:IVY_NAVY,marginBottom:6}}>📝 Priority Narrative Write-Ups</div>
+                  {sysAnalysis.accreditationOutlook.priorityNarratives.map((n,i)=><div key={i} style={{fontSize:11,color:"#374151",marginBottom:3}}>  {i+1}. {n}</div>)}
+                </div>)}
+              </SectionCard>)}
               {sysAnalysis.priorityActions?.length>0&&<SectionCard title="📋 System-Level Priority Actions" accentColor="#6366f1">
                 {sysAnalysis.priorityActions.map((act,i)=>{const pc=PRIORITY_COLOR[act.priority]||"#6b7280";return(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 10px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
                   <span style={{fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:99,background:pc+"22",color:pc,border:`1px solid ${pc}40`,flexShrink:0,marginTop:1}}>{(act.priority||"").replace("_"," ")}</span>
@@ -966,9 +848,9 @@ function App(){
 
             {centerTab==="data"&&(<div>
               {!apiKey&&(<div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:10,padding:"10px 13px",marginBottom:12,display:"flex",alignItems:"center",gap:10,fontSize:11,color:"#92400e"}}>
-                <span>💡</span><span>Connect Google Sheets &amp; Docs to import directly from URLs. <button onClick={()=>setShowApiPanel(true)} style={{background:"none",border:"none",color:"#7c3aed",fontWeight:700,cursor:"pointer",fontSize:11,padding:0}}>Set up now →</button></span>
+                <span>💡</span><span>Connect Google Sheets to import survey data. <button onClick={()=>setShowApiPanel(true)} style={{background:"none",border:"none",color:"#7c3aed",fontWeight:700,cursor:"pointer",fontSize:11,padding:0}}>Set up now →</button></span>
               </div>)}
-              {centerYears.length===0&&(<div style={{textAlign:"center",padding:"36px 20px",color:"#9ca3af",fontSize:12,background:"#fff",borderRadius:12,border:"2px dashed #e5e7eb",marginBottom:10}}><div style={{fontSize:26,marginBottom:8}}>📅</div>No school years added yet. Add a year below to get started.</div>)}
+              {centerYears.length===0&&(<div style={{textAlign:"center",padding:"36px 20px",color:"#9ca3af",fontSize:12,background:"#fff",borderRadius:12,border:"2px dashed #e5e7eb",marginBottom:10}}><div style={{fontSize:26,marginBottom:8}}>📅</div>No school years added yet.</div>)}
               {centerYears.map((year,i)=>(<YearPanel key={year} year={year} isLatest={i===0} yearData={cd.years[year]} apiKey={apiKey} onUpdate={d=>updateYearData(year,d)} onRemoveYear={()=>removeYear(year)}/>))}
               {availableYears.length>0&&(showAddYear?(
                 <div style={{display:"flex",gap:8,alignItems:"center",padding:10,border:"1px solid #e5e7eb",borderRadius:9,background:"#fff",marginBottom:8}}>
@@ -1002,12 +884,9 @@ function App(){
                 <div style={{display:"flex",gap:3,alignItems:"flex-end",height:66}}>
                   {[...mt.yearlyScores].sort((a,b)=>a.year.localeCompare(b.year)).map((y,i,arr)=>(<ScoreBar key={i} score={y.score} label={y.year} isLatest={i===arr.length-1}/>))}
                 </div>
-                {mt.yearlyScores.some(y=>y.headline)&&(<div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4}}>
-                  {[...mt.yearlyScores].sort((a,b)=>a.year.localeCompare(b.year)).map((y,i)=>y.headline?(<span key={i} style={{fontSize:9,color:"#6b7280",background:"#f3f4f6",borderRadius:6,padding:"2px 7px"}}><b style={{color:"#4c1d95"}}>{y.year}</b> · {y.headline}</span>):null)}
-                </div>)}
               </div>)}
               {cy.strengthThemes?.length>0&&<SectionCard title="✅ This Year's Strengths" subtitle={`${cy.strengthThemes.length} themes · ${cy.year}`} accentColor="#10b981">{cy.strengthThemes.map((s,i)=><ThemeBlock key={i} item={s} type="strength"/>)}</SectionCard>}
-              {cy.improvementThemes?.length>0&&<SectionCard title="⚠️ This Year's Areas for Improvement" subtitle={`${cy.year}`} accentColor={CITRON}>{cy.improvementThemes.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
+              {cy.improvementThemes?.length>0&&<SectionCard title="⚠️ Areas for Improvement" subtitle={cy.year} accentColor={CITRON}>{cy.improvementThemes.map((s,i)=><ThemeBlock key={i} item={s} type="concern"/>)}</SectionCard>}
               {cy.classroomSpotlights?.length>0&&<SectionCard title="🏫 Classroom Spotlights" subtitle={cy.year} accentColor={SKY_BLUE}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   {cy.classroomSpotlights.map((c,i)=>{const ok=c.status==="performing_well";return(<div key={i} style={{borderRadius:9,padding:9,background:ok?"#f0fdf4":"#fffbeb",border:`1px solid ${ok?"#a7f3d0":"#fcd34d"}`}}>
@@ -1022,10 +901,10 @@ function App(){
               </SectionCard>}
               {cy.inconsistencies?.length>0&&<SectionCard title="🚨 Cross-Report Inconsistencies" subtitle={`${cy.inconsistencies.length} found · ${cy.year}`} accentColor="#ef4444">{cy.inconsistencies.map((item,i)=><InconsistencyBlock key={i} item={item}/>)}</SectionCard>}
               {cy.accreditationRisks?.length>0&&<SectionCard title="🎓 Cognia Accreditation Risks" subtitle={cy.year} accentColor={IVY_NAVY}>
-                {cy.accreditationRisks.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:SKY_BLUE+"22",border:`1px solid ${SKY_BLUE}`,borderRadius:8,marginBottom:5}}>
-                  <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:99,background:SEVERITY_COLOR[r.severity]+"22",color:SEVERITY_COLOR[r.severity],flexShrink:0,marginTop:1}}>{r.severity}</span>
-                  <div><div style={{fontSize:11,fontWeight:700,color:IVY_NAVY}}>{r.risk}</div>{r.standard&&<div style={{fontSize:10,color:IVY_BLUE,marginTop:1}}>Cognia: {r.standard}</div>}</div>
-                </div>))}
+                <div style={{marginBottom:8,padding:"8px 10px",background:SKY_BLUE+"22",borderRadius:8,fontSize:11,color:IVY_NAVY}}>
+                  Risks are mapped to Cognia's four key characteristics and the narrative write-ups that will need to address them.
+                </div>
+                {cy.accreditationRisks.map((r,i)=><AccreditationRiskBlock key={i} item={r}/>)}
               </SectionCard>}
               {cy.recommendedActions?.length>0&&<SectionCard title="📋 Recommended Actions" subtitle={`For ${cy.year}`} accentColor={OLIVE}>
                 {cy.recommendedActions.map((act,i)=>{const pc=PRIORITY_COLOR[act.priority]||"#6b7280";return(<div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,padding:"7px 10px",background:"#fafafa",borderRadius:8,border:"1px solid #f3f4f6",marginBottom:4}}>
@@ -1057,7 +936,7 @@ function App(){
                   </div>))}
                 </SectionCard>}
                 {mt.inconsistencyPattern&&<SectionCard title="⚠️ Inconsistency Trend" accentColor="#f59e0b" collapsible defaultOpen={false}><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{mt.inconsistencyPattern}</p></SectionCard>}
-                {mt.accreditationTrajectory&&<SectionCard title="🎓 Accreditation Trajectory" accentColor="#7c3aed" collapsible defaultOpen={false}><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{mt.accreditationTrajectory}</p></SectionCard>}
+                {mt.accreditationTrajectory&&<SectionCard title="🎓 Cognia Accreditation Trajectory" accentColor={IVY_NAVY} collapsible defaultOpen={false}><p style={{fontSize:12,color:"#4b5563",lineHeight:1.65,margin:0}}>{mt.accreditationTrajectory}</p></SectionCard>}
               </div>)}
               <button onClick={()=>setCenterTab("data")} style={{width:"100%",padding:9,borderRadius:8,border:"2px dashed #d1d5db",background:"transparent",fontSize:11,color:"#9ca3af",cursor:"pointer",marginTop:4}}>← Return to data entry</button>
             </div>)}
